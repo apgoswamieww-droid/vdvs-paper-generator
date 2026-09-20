@@ -1,0 +1,331 @@
+// ============================================================
+//  Prisma Schema — SaaS School Custom Paper Generator
+//  Database: Neon Serverless PostgreSQL
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // directUrl is required by Neon for Prisma migrations (bypasses the pooler)
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================================
+//  ENUMS
+// ============================================================
+
+enum UserRole {
+  SUPER_ADMIN  // Platform owner
+  SCHOOL_ADMIN // Admin of a tenant school
+  TEACHER      // Creates/manages papers
+  STUDENT      // (future) views assigned papers
+}
+
+enum PlanTier {
+  FREE
+  STARTER
+  PRO
+  ENTERPRISE
+}
+
+enum PaperStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum QuestionType {
+  MCQ             // Multiple Choice
+  SHORT_ANSWER
+  LONG_ANSWER
+  TRUE_FALSE
+  FILL_IN_THE_BLANK
+  MATCH_THE_FOLLOWING
+}
+
+enum DifficultyLevel {
+  EASY
+  MEDIUM
+  HARD
+}
+
+// ============================================================
+//  TENANT (School)
+// ============================================================
+
+model School {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique   // used as subdomain / tenant identifier
+  logoUrl     String?
+  address     String?
+  phone       String?
+  website     String?
+  planTier    PlanTier @default(FREE)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  users         User[]
+  subjects      Subject[]
+  papers        Paper[]
+  questionBank  Question[]
+  subscription  Subscription?
+
+  @@map("schools")
+}
+
+// ============================================================
+//  USER
+// ============================================================
+
+model User {
+  id             String   @id @default(cuid())
+  name           String?
+  email          String   @unique
+  emailVerified  DateTime?
+  passwordHash   String?
+  avatarUrl      String?
+  role           UserRole @default(TEACHER)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Multi-tenant FK
+  schoolId  String
+  school    School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  // Relations
+  papers         Paper[]
+  accounts       Account[]
+  sessions       Session[]
+
+  @@index([schoolId])
+  @@map("users")
+}
+
+// ============================================================
+//  AUTH (NextAuth / Auth.js compatible tables)
+// ============================================================
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ============================================================
+//  SUBJECT & CHAPTER
+// ============================================================
+
+model Subject {
+  id        String   @id @default(cuid())
+  name      String
+  code      String?
+  gradeLevel String?  // e.g., "Grade 10", "Class IX"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  schoolId  String
+  school    School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  chapters  Chapter[]
+  questions Question[]
+  papers    Paper[]
+
+  @@unique([schoolId, name, gradeLevel])
+  @@index([schoolId])
+  @@map("subjects")
+}
+
+model Chapter {
+  id        String   @id @default(cuid())
+  name      String
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  subjectId String
+  subject   Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  questions Question[]
+
+  @@index([subjectId])
+  @@map("chapters")
+}
+
+// ============================================================
+//  QUESTION BANK
+// ============================================================
+
+model Question {
+  id             String          @id @default(cuid())
+  questionText   String          @db.Text
+  questionType   QuestionType
+  difficulty     DifficultyLevel @default(MEDIUM)
+  marks          Float           @default(1)
+  options        Json?           // For MCQ: [{ "label": "A", "text": "...", "isCorrect": true }]
+  answerKey      String?         @db.Text
+  explanation    String?         @db.Text
+  tags           String[]        // Array of tag strings
+  imageUrl       String?
+  isActive       Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  // Tenant FK
+  schoolId   String
+  school     School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  subjectId  String
+  subject    Subject  @relation(fields: [subjectId], references: [id])
+
+  chapterId  String?
+  chapter    Chapter? @relation(fields: [chapterId], references: [id])
+
+  // Many-to-many with Papers via join table
+  paperSections PaperSectionQuestion[]
+
+  @@index([schoolId])
+  @@index([subjectId])
+  @@index([chapterId])
+  @@map("questions")
+}
+
+// ============================================================
+//  PAPER (Exam Paper)
+// ============================================================
+
+model Paper {
+  id           String      @id @default(cuid())
+  title        String
+  description  String?
+  totalMarks   Float       @default(0)
+  duration     Int?        // in minutes
+  instructions String?     @db.Text
+  status       PaperStatus @default(DRAFT)
+  publishedAt  DateTime?
+  pdfUrl       String?     // link to generated PDF
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  // Tenant FK
+  schoolId  String
+  school    School  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  subjectId String?
+  subject   Subject? @relation(fields: [subjectId], references: [id])
+
+  createdById String
+  createdBy   User   @relation(fields: [createdById], references: [id])
+
+  sections PaperSection[]
+
+  @@index([schoolId])
+  @@index([createdById])
+  @@map("papers")
+}
+
+// ============================================================
+//  PAPER SECTION  (e.g., Section A — MCQ, Section B — Long Answer)
+// ============================================================
+
+model PaperSection {
+  id           String  @id @default(cuid())
+  title        String  // e.g., "Section A"
+  instructions String?
+  order        Int     @default(0)
+  totalMarks   Float   @default(0)
+
+  paperId String
+  paper   Paper  @relation(fields: [paperId], references: [id], onDelete: Cascade)
+
+  questions PaperSectionQuestion[]
+
+  @@index([paperId])
+  @@map("paper_sections")
+}
+
+// ============================================================
+//  JOIN TABLE — Paper Section ↔ Questions
+// ============================================================
+
+model PaperSectionQuestion {
+  id         String @id @default(cuid())
+  order      Int    @default(0)
+  marksOverride Float?  // override question's default marks in this paper
+
+  sectionId  String
+  section    PaperSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([sectionId, questionId])
+  @@index([sectionId])
+  @@index([questionId])
+  @@map("paper_section_questions")
+}
+
+// ============================================================
+//  SUBSCRIPTION (Billing / Plan Management)
+// ============================================================
+
+model Subscription {
+  id                  String    @id @default(cuid())
+  stripeCustomerId    String?   @unique
+  stripeSubscriptionId String?  @unique
+  stripePriceId       String?
+  planTier            PlanTier  @default(FREE)
+  status              String    @default("active") // active | canceled | past_due
+  currentPeriodStart  DateTime?
+  currentPeriodEnd    DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  schoolId String  @unique
+  school   School  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
