@@ -19,10 +19,10 @@ datasource db {
 // ============================================================
 
 enum UserRole {
-  SUPER_ADMIN  // Platform owner
+  SUPER_ADMIN // Platform owner
   SCHOOL_ADMIN // Admin of a tenant school
-  TEACHER      // Creates/manages papers
-  STUDENT      // (future) views assigned papers
+  TEACHER // Creates/manages papers
+  STUDENT // (future) views assigned papers
 }
 
 enum PlanTier {
@@ -36,15 +36,14 @@ enum PaperStatus {
   DRAFT
   PUBLISHED
   ARCHIVED
-}
-
-enum QuestionType {
+}enum QuestionType {
   MCQ             // Multiple Choice
   SHORT_ANSWER
   LONG_ANSWER
   TRUE_FALSE
   FILL_IN_THE_BLANK
   MATCH_THE_FOLLOWING
+  CASE_STUDY      // Passage-based analytical question
 }
 
 enum DifficultyLevel {
@@ -53,29 +52,71 @@ enum DifficultyLevel {
   HARD
 }
 
+enum BloomLevel {
+  REMEMBER
+  UNDERSTAND
+  APPLY
+  ANALYZE
+  EVALUATE
+  CREATE
+}
+
+enum CaseStudyFormat {
+  INLINE
+  SHARED_PASSAGE
+}
+
+enum ImportStatus {
+  PENDING
+  PARTIAL
+  COMPLETED
+  FAILED
+}
+
+model QuestionImport {
+  id           String       @id @default(cuid())
+  fileName     String
+  status       ImportStatus @default(PENDING)
+  totalCount   Int          @default(0)
+  successCount Int          @default(0)
+  failedCount  Int          @default(0)
+  errors       Json // [{ row, questionPreview, error }]
+  createdAt    DateTime     @default(now())
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User   @relation(fields: [userId], references: [id])
+
+  @@index([schoolId, createdAt])
+  @@map("question_imports")
+}
+
 // ============================================================
 //  TENANT (School)
 // ============================================================
 
 model School {
-  id          String   @id @default(cuid())
-  name        String
-  slug        String   @unique   // used as subdomain / tenant identifier
-  logoUrl     String?
-  address     String?
-  phone       String?
-  website     String?
-  planTier    PlanTier @default(FREE)
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique // used as subdomain / tenant identifier
+  logoUrl   String?
+  address   String?
+  phone     String?
+  website   String?
+  planTier  PlanTier @default(FREE)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
-  users         User[]
-  subjects      Subject[]
-  papers        Paper[]
-  questionBank  Question[]
-  subscription  Subscription?
+  users        User[]
+  classLevels  ClassLevel[]
+  subjects     Subject[]
+  papers       Paper[]
+  questionBank Question[]
+  imports      QuestionImport[]
+  subscription Subscription?
 
   @@map("schools")
 }
@@ -85,25 +126,26 @@ model School {
 // ============================================================
 
 model User {
-  id             String   @id @default(cuid())
-  name           String?
-  email          String   @unique
-  emailVerified  DateTime?
-  passwordHash   String?
-  avatarUrl      String?
-  role           UserRole @default(TEACHER)
-  isActive       Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  passwordHash  String?
+  avatarUrl     String?
+  role          UserRole  @default(TEACHER)
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   // Multi-tenant FK
-  schoolId  String
-  school    School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
   // Relations
-  papers         Paper[]
-  accounts       Account[]
-  sessions       Session[]
+  papers   Paper[]
+  imports  QuestionImport[]
+  accounts Account[]
+  sessions Session[]
 
   @@index([schoolId])
   @@map("users")
@@ -156,26 +198,45 @@ model VerificationToken {
 }
 
 // ============================================================
-//  SUBJECT & CHAPTER
+//  CURRICULUM TAXONOMY — CLASS → SUBJECT → CHAPTER → TOPIC
 // ============================================================
+
+model ClassLevel {
+  id        String   @id @default(cuid())
+  name      String // e.g., "Std 6" … "Std 12"
+  order     Int      @default(0) // sort order (6 → 12)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  subjects Subject[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+  @@map("class_levels")
+}
 
 model Subject {
   id        String   @id @default(cuid())
   name      String
   code      String?
-  gradeLevel String?  // e.g., "Grade 10", "Class IX"
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  schoolId  String
-  school    School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId     String
+  school       School     @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  classLevelId String
+  classLevel   ClassLevel @relation(fields: [classLevelId], references: [id], onDelete: Cascade)
 
   chapters  Chapter[]
   questions Question[]
   papers    Paper[]
 
-  @@unique([schoolId, name, gradeLevel])
+  @@unique([classLevelId, name])
   @@index([schoolId])
+  @@index([classLevelId])
   @@map("subjects")
 }
 
@@ -187,12 +248,31 @@ model Chapter {
   updatedAt DateTime @updatedAt
 
   subjectId String
-  subject   Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  topics    Topic[]
+  questions Question[]
+
+  @@unique([subjectId, name])
+  @@index([subjectId])
+  @@map("chapters")
+}
+
+model Topic {
+  id        String   @id @default(cuid())
+  name      String
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  chapterId String
+  chapter   Chapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
 
   questions Question[]
 
-  @@index([subjectId])
-  @@map("chapters")
+  @@unique([chapterId, name])
+  @@index([chapterId])
+  @@map("topics")
 }
 
 // ============================================================
@@ -200,29 +280,38 @@ model Chapter {
 // ============================================================
 
 model Question {
-  id             String          @id @default(cuid())
-  questionText   String          @db.Text
-  questionType   QuestionType
-  difficulty     DifficultyLevel @default(MEDIUM)
-  marks          Float           @default(1)
-  options        Json?           // For MCQ: [{ "label": "A", "text": "...", "isCorrect": true }]
-  answerKey      String?         @db.Text
-  explanation    String?         @db.Text
-  tags           String[]        // Array of tag strings
-  imageUrl       String?
-  isActive       Boolean         @default(true)
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
+  id           String          @id @default(cuid())
+  questionText String          @db.Text
+  questionType QuestionType
+  difficulty   DifficultyLevel @default(MEDIUM)
+  marks        Float           @default(1)
+  options      Json? // For MCQ: [{ "label": "A", "text": "...", "isCorrect": true }]
+  answerKey    String?         @db.Text
+  explanation  String?         @db.Text
+  tags         String[] // Array of tag strings
+  imageUrl     String?
+  isActive     Boolean         @default(true)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
 
   // Tenant FK
-  schoolId   String
-  school     School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  subjectId  String
-  subject    Subject  @relation(fields: [subjectId], references: [id])
+  subjectId String
+  subject   Subject @relation(fields: [subjectId], references: [id])
 
-  chapterId  String?
-  chapter    Chapter? @relation(fields: [chapterId], references: [id])
+  chapterId String?
+  chapter   Chapter? @relation(fields: [chapterId], references: [id])
+
+  // Taxonomy (topic optional — chapter fallback)
+  topicId String?
+  topic   Topic?  @relation(fields: [topicId], references: [id])
+
+  // Pedagogy metadata
+  bloomLevel      BloomLevel?
+  caseStudyFormat CaseStudyFormat? // for CASE_STUDY questions
+  previousYearTag String? // e.g., "GSEB 2023", "Board 2024"
 
   // Many-to-many with Papers via join table
   paperSections PaperSectionQuestion[]
@@ -230,6 +319,8 @@ model Question {
   @@index([schoolId])
   @@index([subjectId])
   @@index([chapterId])
+  @@index([topicId])
+  @@index([previousYearTag])
   @@map("questions")
 }
 
@@ -242,17 +333,17 @@ model Paper {
   title        String
   description  String?
   totalMarks   Float       @default(0)
-  duration     Int?        // in minutes
+  duration     Int? // in minutes
   instructions String?     @db.Text
   status       PaperStatus @default(DRAFT)
   publishedAt  DateTime?
-  pdfUrl       String?     // link to generated PDF
+  pdfUrl       String? // link to generated PDF
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
   // Tenant FK
-  schoolId  String
-  school    School  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
   subjectId String?
   subject   Subject? @relation(fields: [subjectId], references: [id])
@@ -273,7 +364,7 @@ model Paper {
 
 model PaperSection {
   id           String  @id @default(cuid())
-  title        String  // e.g., "Section A"
+  title        String // e.g., "Section A"
   instructions String?
   order        Int     @default(0)
   totalMarks   Float   @default(0)
@@ -292,12 +383,12 @@ model PaperSection {
 // ============================================================
 
 model PaperSectionQuestion {
-  id         String @id @default(cuid())
-  order      Int    @default(0)
-  marksOverride Float?  // override question's default marks in this paper
+  id            String @id @default(cuid())
+  order         Int    @default(0)
+  marksOverride Float? // override question's default marks in this paper
 
-  sectionId  String
-  section    PaperSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  sectionId String
+  section   PaperSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
 
   questionId String
   question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
@@ -313,19 +404,19 @@ model PaperSectionQuestion {
 // ============================================================
 
 model Subscription {
-  id                  String    @id @default(cuid())
-  stripeCustomerId    String?   @unique
-  stripeSubscriptionId String?  @unique
-  stripePriceId       String?
-  planTier            PlanTier  @default(FREE)
-  status              String    @default("active") // active | canceled | past_due
-  currentPeriodStart  DateTime?
-  currentPeriodEnd    DateTime?
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  id                   String    @id @default(cuid())
+  stripeCustomerId     String?   @unique
+  stripeSubscriptionId String?   @unique
+  stripePriceId        String?
+  planTier             PlanTier  @default(FREE)
+  status               String    @default("active") // active | canceled | past_due
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
-  schoolId String  @unique
-  school   School  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId String @unique
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
   @@map("subscriptions")
 }
