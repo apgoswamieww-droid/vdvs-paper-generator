@@ -6,20 +6,23 @@
 // ============================================================
 
 import { revalidatePath } from "next/cache";
+import { Prisma } from "@prisma/client";
 import type {
-  Prisma,
   QuestionType,
   DifficultyLevel,
   BloomLevel,
   CaseStudyFormat,
+  Medium,
 } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { requireSession } from "@/lib/session";
+import { randomQuestionCode } from "@/lib/question-code";
 import { toQuestionData } from "@/lib/question-mapper";
 import {
   questionFormSchema,
   questionFilterSchema,
   type ActionState,
+  type QuestionFormValue,
 } from "@/lib/validations";
 import type { PaginatedResponse } from "@/types";
 
@@ -27,6 +30,22 @@ const QUESTION_PATHS = ["/dashboard/questions", "/dashboard"];
 
 function revalidateQuestions() {
   for (const p of QUESTION_PATHS) revalidatePath(p);
+}
+
+// Stricter manual-form rules that the shared schema intentionally leaves
+// optional (so bulk import / legacy rows still work). Topic and the answer
+// for nothing-but-an-answer types must be present before we persist.
+function missingRequired(data: QuestionFormValue): string | null {
+  if (!data.topicId?.trim()) return "Topic is required";
+  if (
+    ["SHORT_ANSWER", "LONG_ANSWER", "FILL_IN_THE_BLANK", "TRUE_FALSE"].includes(
+      data.questionType
+    ) &&
+    !(data.answerKey ?? "").trim()
+  ) {
+    return "Answer is required";
+  }
+  return null;
 }
 
 // ------------------------------------------------------------
@@ -52,6 +71,8 @@ export async function createQuestion(
     const path = issue?.path?.join(".") || "form";
     return { success: false, error: `${path}: ${issue?.message ?? "Invalid data"}` };
   }
+  const missing = missingRequired(parsed.data);
+  if (missing) return { success: false, error: missing };
 
   const data = parsed.data;
 
@@ -72,16 +93,31 @@ export async function createQuestion(
   }
 
   try {
-    const created = await prisma.question.create({
-      data: {
-        ...toQuestionData(parsed.data),
-        schoolId: session.schoolId,
-        subjectId: data.subjectId,
-        chapterId: data.chapterId,
-      },
-    });
-    revalidateQuestions();
-    return { success: true, id: created.id, message: "Question created." };
+    // The code is unique in the DB — retry a few times on collision.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        const created = await prisma.question.create({
+          data: {
+            ...toQuestionData(parsed.data),
+            code: randomQuestionCode(),
+            schoolId: session.schoolId,
+            subjectId: data.subjectId,
+            chapterId: data.chapterId,
+          },
+        });
+        revalidateQuestions();
+        return { success: true, id: created.id, message: "Question created." };
+      } catch (err) {
+        if (
+          err instanceof Prisma.PrismaClientKnownRequestError &&
+          err.code === "P2002"
+        ) {
+          continue; // unique-code collision → try another code
+        }
+        throw err;
+      }
+    }
+    return { success: false, error: "Could not generate a unique question code." };
   } catch {
     return { success: false, error: "Could not create question." };
   }
@@ -107,6 +143,8 @@ export async function updateQuestion(
     const path = issue?.path?.join(".") || "form";
     return { success: false, error: `${path}: ${issue?.message ?? "Invalid data"}` };
   }
+  const missing = missingRequired(parsed.data);
+  if (missing) return { success: false, error: missing };
 
   // Ensure the question exists within this tenant
   const existing = await prisma.question.findFirst({
@@ -160,9 +198,11 @@ export async function deleteQuestion(id: string): Promise<ActionState> {
 
 export type QuestionListDTO = {
   id: string;
+  code: string;
   questionText: string;
   questionType: QuestionType;
   difficulty: DifficultyLevel;
+  medium: Medium;
   bloomLevel: BloomLevel | null;
   marks: number;
   tags: string[];
@@ -193,6 +233,7 @@ export async function listQuestions(
     ...(f.topicId ? { topicId: f.topicId } : {}),
     ...(f.questionType ? { questionType: f.questionType } : {}),
     ...(f.difficulty ? { difficulty: f.difficulty } : {}),
+    ...(f.medium ? { medium: f.medium } : {}),
     ...(f.bloomLevel ? { bloomLevel: f.bloomLevel } : {}),
     ...(f.previousYearTag
       ? { previousYearTag: { contains: f.previousYearTag } }
@@ -215,9 +256,11 @@ export async function listQuestions(
       where,
       select: {
         id: true,
+        code: true,
         questionText: true,
         questionType: true,
         difficulty: true,
+        medium: true,
         bloomLevel: true,
         marks: true,
         tags: true,
@@ -235,9 +278,11 @@ export async function listQuestions(
   return {
     items: rows.map((r) => ({
       id: r.id,
+      code: r.code,
       questionText: r.questionText,
       questionType: r.questionType,
       difficulty: r.difficulty,
+      medium: r.medium,
       bloomLevel: r.bloomLevel,
       marks: r.marks,
       tags: r.tags,
@@ -263,6 +308,7 @@ export type TaxonomyNode = {
   id: string;
   name: string;
   code?: string | null; // subjects only
+  medium?: Medium; // subjects only
   order?: number; // chapters/topics
   children: TaxonomyNode[];
 };
@@ -295,6 +341,7 @@ export async function getTaxonomyTree(): Promise<TaxonomyNode[]> {
       id: s.id,
       name: s.name,
       code: s.code,
+      medium: s.medium,
       children: s.chapters.map((ch) => ({
         id: ch.id,
         name: ch.name,
@@ -307,6 +354,54 @@ export async function getTaxonomyTree(): Promise<TaxonomyNode[]> {
         })),
       })),
     })),
+  }));
+}
+
+// ------------------------------------------------------------
+//  Recent questions (the latest few, for the Add-Question page)
+// ------------------------------------------------------------
+
+export type RecentQuestionDTO = {
+  id: string;
+  code: string;
+  questionText: string;
+  questionType: QuestionType;
+  medium: Medium;
+  marks: number;
+  createdAt: string;
+  chapterName: string | null;
+};
+
+export async function listRecentQuestions(
+  limit = 5
+): Promise<RecentQuestionDTO[]> {
+  const { schoolId } = await requireSession();
+
+  const rows = await prisma.question.findMany({
+    where: { schoolId },
+    select: {
+      id: true,
+      code: true,
+      questionText: true,
+      questionType: true,
+      medium: true,
+      marks: true,
+      createdAt: true,
+      chapter: { select: { name: true } },
+    },
+    orderBy: { createdAt: "desc" },
+    take: Math.max(1, Math.min(25, Number(limit) || 5)),
+  });
+
+  return rows.map((r) => ({
+    id: r.id,
+    code: r.code,
+    questionText: r.questionText,
+    questionType: r.questionType,
+    medium: r.medium,
+    marks: r.marks,
+    createdAt: r.createdAt.toISOString(),
+    chapterName: r.chapter?.name ?? null,
   }));
 }
 
@@ -336,9 +431,11 @@ export async function getQuestionById(id: string): Promise<QuestionDetailDTO | n
 
   return {
     id: q.id,
+    code: q.code,
     questionText: q.questionText,
     questionType: q.questionType,
     difficulty: q.difficulty,
+    medium: q.medium,
     bloomLevel: q.bloomLevel,
     marks: q.marks,
     tags: q.tags,

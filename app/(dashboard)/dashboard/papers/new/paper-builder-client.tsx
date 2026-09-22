@@ -21,6 +21,7 @@ import { KaTeXRenderer } from "@/components/shared/katex-text";
 import { listQuestions, getTaxonomyTree, type TaxonomyNode, type QuestionListDTO } from "../../questions/actions";
 import { createManualPaper, createBlueprintPaper } from "../actions";
 import type { ActionState } from "@/lib/validations";
+import { MEDIUMS } from "@/lib/validations";
 
 // ============================================================
 //  Types
@@ -74,6 +75,11 @@ function formatQuestionType(type: string): string {
   return map[type] || type;
 }
 
+const MEDIUM_LABELS: Record<string, string> = {
+  ENGLISH: "English",
+  GUJARATI: "Gujarati",
+};
+
 // ============================================================
 //  Main Component
 // ============================================================
@@ -103,6 +109,7 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
 
   // Question search/filter state
   const [qSearch, setQSearch] = useState("");
+  const [qMedium, setQMedium] = useState("");
   const [qSubjectId, setQSubjectId] = useState("");
   const [qChapterId, setQChapterId] = useState("");
   const [qType, setQType] = useState("");
@@ -115,6 +122,7 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
   // ---- Blueprint Mode State ----
   const [bpClassLevelId, setBpClassLevelId] = useState("");
   const [bpSubjectId, setBpSubjectId] = useState("");
+  const [bpMedium, setBpMedium] = useState("");
   const [rules, setRules] = useState<BlueprintRuleDraft[]>([
     {
       id: newRuleId(),
@@ -148,6 +156,7 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
           pageSize: 15,
         };
         if (qSearch) filters.search = qSearch;
+        if (qMedium) filters.medium = qMedium;
         if (qSubjectId) filters.subjectId = qSubjectId;
         if (qChapterId) filters.chapterId = qChapterId;
         if (qType) filters.questionType = qType;
@@ -159,7 +168,7 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
         setQuestionPage(page);
       });
     },
-    [qSearch, qSubjectId, qChapterId, qType, qDifficulty]
+    [qSearch, qMedium, qSubjectId, qChapterId, qType, qDifficulty]
   );
 
   // ---- Section Management ----
@@ -453,7 +462,7 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
               </CardHeader>
               <CardContent className="space-y-4">
                 {/* Filters */}
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
                   <Input
                     placeholder="Search questions..."
                     value={qSearch}
@@ -461,6 +470,17 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
                     onKeyDown={(e) => e.key === "Enter" && searchQuestions()}
                     className="text-sm"
                   />
+                  <Select value={qMedium} onValueChange={(v) => { setQMedium(v ?? ""); setQSubjectId(""); setQChapterId(""); }}>
+                    <SelectTrigger className="text-sm">
+                      <SelectValue placeholder="All Mediums" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Mediums</SelectItem>
+                      {MEDIUMS.map((m) => (
+                        <SelectItem key={m} value={m}>{MEDIUM_LABELS[m]}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                   <Select value={qSubjectId} onValueChange={(v) => { setQSubjectId(v ?? ""); setQChapterId(""); }}>
                     <SelectTrigger className="text-sm">
                       <SelectValue placeholder="All Subjects" />
@@ -468,11 +488,13 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
                     <SelectContent>
                       <SelectItem value="all">All Subjects</SelectItem>
                       {taxonomy.flatMap((cl) =>
-                        cl.children.map((s) => (
-                          <SelectItem key={s.id} value={s.id}>
-                            {cl.name} — {s.name}
-                          </SelectItem>
-                        ))
+                        cl.children
+                          .filter((s) => !qMedium || s.medium === qMedium)
+                          .map((s) => (
+                            <SelectItem key={s.id} value={s.id}>
+                              {cl.name} — {s.name}
+                            </SelectItem>
+                          ))
                       )}
                     </SelectContent>
                   </Select>
@@ -624,17 +646,32 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
               </CardHeader>
               <CardContent className="space-y-4">
                 {/* Class & Subject selection */}
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  <div className="space-y-2">
+                    <Label>Medium *</Label>
+                    <Select value={bpMedium} onValueChange={(v) => { setBpMedium(v ?? ""); setBpClassLevelId(""); setBpSubjectId(""); }}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select medium" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {MEDIUMS.map((m) => (
+                          <SelectItem key={m} value={m}>{MEDIUM_LABELS[m]}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                   <div className="space-y-2">
                     <Label>Class *</Label>
-                    <Select value={bpClassLevelId} onValueChange={(v) => { setBpClassLevelId(v ?? ""); setBpSubjectId(""); }}>
+                    <Select value={bpClassLevelId} onValueChange={(v) => { setBpClassLevelId(v ?? ""); setBpSubjectId(""); }} disabled={!bpMedium}>
                       <SelectTrigger>
                         <SelectValue placeholder="Select class" />
                       </SelectTrigger>
                       <SelectContent>
-                        {taxonomy.map((cl) => (
-                          <SelectItem key={cl.id} value={cl.id}>{cl.name}</SelectItem>
-                        ))}
+                        {taxonomy
+                          .filter((cl) => cl.children.some((s) => s.medium === bpMedium))
+                          .map((cl) => (
+                            <SelectItem key={cl.id} value={cl.id}>{cl.name}</SelectItem>
+                          ))}
                       </SelectContent>
                     </Select>
                   </div>
@@ -647,7 +684,9 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
                       <SelectContent>
                         {taxonomy
                           .find((cl) => cl.id === bpClassLevelId)
-                          ?.children.map((s) => (
+                          ?.children
+                          .filter((s) => s.medium === bpMedium)
+                          .map((s) => (
                             <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
                           ))}
                       </SelectContent>

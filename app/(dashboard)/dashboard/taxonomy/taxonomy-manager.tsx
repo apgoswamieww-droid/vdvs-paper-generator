@@ -46,6 +46,18 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "cn";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
+const MEDIUM_OPTIONS = [
+  { value: "ENGLISH", label: "English" },
+  { value: "GUJARATI", label: "Gujarati" },
+];
 
 type Entity = "class" | "subject" | "chapter" | "topic";
 
@@ -57,6 +69,7 @@ type DialogState =
       id: string;
       name: string;
       code?: string | null;
+      medium?: string;
       order?: number;
     }
   | null;
@@ -166,7 +179,7 @@ export function TaxonomyManager({ initialTree }: { initialTree: TaxonomyNode[] }
           onAdd={() => setDialog({ mode: "create", entity: "subject", parentId: selected.classId })}
           addDisabled={!selected.classId}
           onEdit={(n) =>
-            setDialog({ mode: "edit", entity: "subject", id: n.id, name: n.name, code: n.code })
+            setDialog({ mode: "edit", entity: "subject", id: n.id, name: n.name, code: n.code, medium: n.medium as string })
           }
           onDelete={(n) => setDeleteTarget({ entity: "subject", id: n.id, name: n.name })}
           emptyHint={selected.classId ? "No subjects yet" : "Select a class first"}
@@ -276,6 +289,7 @@ function Column({
             >
               {n.name}
               {n.code ? <span className="ml-2 text-xs text-slate-500">{n.code}</span> : null}
+              {n.medium ? <span className="ml-2 text-[10px] text-slate-600">{n.medium === "GUJARATI" ? "GJ" : "EN"}</span> : null}
             </button>
             <div className="flex opacity-0 transition group-hover:opacity-100">
               <Button
@@ -406,6 +420,32 @@ function TaxonomyDialog({
               placeholder="e.g. Quadratic Equations"
             />
           </div>
+
+          {dialog.entity === "subject" && (
+            <div className="space-y-1.5">
+              <Label>Medium</Label>
+              <input type="hidden" name="medium" value={dialog.mode === "edit" && dialog.entity === "subject" ? (dialog as { medium?: string }).medium ?? "ENGLISH" : "ENGLISH"} />
+              <Select
+                items={MEDIUM_OPTIONS}
+                value={dialog.mode === "edit" && dialog.entity === "subject" ? (dialog as { medium?: string }).medium ?? "ENGLISH" : "ENGLISH"}
+                onValueChange={(v) => {
+                  const hidden = document.querySelector('input[name="medium"]') as HTMLInputElement | null;
+                  if (hidden && typeof v === "string") hidden.value = v;
+                }}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {MEDIUM_OPTIONS.map((m) => (
+                    <SelectItem key={m.value} value={m.value}>
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           {dialog.entity !== "class" && (
             <div className="space-y-1.5">

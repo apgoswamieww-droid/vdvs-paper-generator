@@ -192,3 +192,65 @@
   @apply ring-2 border-primary/50;
   ring-color: oklch(0.87 0.16 95 / 0.3);
 }
+
+/* ============================================================
+   ADVANCED CUSTOM EDITOR
+   ============================================================ */
+
+.math-editor,
+.katex-host {
+  font-family: var(--font-serif), "Nunito", sans-serif;
+}
+
+.math-editor:empty::before {
+  content: attr(data-placeholder);
+  color: oklch(0.45 0.02 280);
+  pointer-events: none;
+  user-select: none;
+}
+
+.math-chip {
+  display: inline-block;
+  vertical-align: middle;
+  margin-inline: 2px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid oklch(0.55 0.2 270 / 0.35);
+  background: oklch(0.28 0.09 270 / 0.35);
+  color: oklch(0.92 0.04 270);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.math-chip.math-chip-selected,
+.math-chip:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px oklch(0.62 0.22 270 / 0.55);
+  background: oklch(0.32 0.12 270 / 0.5);
+}
+
+/* ============================================================
+   KaTeX: use the exact same family as question text (.math-editor /
+   .katex-host) and the surrounding text's size so equations match
+   typed text (1.21em default looked larger). Font-size is set on
+   the root .katex only — inner spans keep relative sizing.
+   Equations are forced upright (not italic).
+   ============================================================ */
+
+.katex {
+  font-family: var(--font-serif), "Nunito", sans-serif !important;
+  font-size: 1em !important;
+}
+
+.katex .mathnormal,
+.katex .mathit,
+.katex .boldsymbol,
+.katex .mathitsf {
+  font-style: normal !important;
+}
+
+.katex .katex-html span,
+.katex .katex-mathml {
+  font-family: var(--font-serif), "Nunito", sans-serif !important;
+}

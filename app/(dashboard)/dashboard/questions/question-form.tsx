@@ -1,7 +1,7 @@
 "use client";
 
 // ============================================================
-//  Question Form Dialog — create/edit with live KaTeX preview
+//  Question Form — shared create/edit form (page-based)
 //
 //  - react-hook-form + zodResolver (questionFormSchema)
 //  - Cascading Class → Subject → Chapter → Topic selects
@@ -10,9 +10,11 @@
 //  - Live preview renders Gujarati Unicode + $...$ KaTeX
 // ============================================================
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useForm, useFieldArray } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { toast } from "sonner";
 import {
   createQuestion,
   updateQuestion,
@@ -25,22 +27,15 @@ import {
   DIFFICULTIES,
   BLOOM_LEVELS,
   CASE_STUDY_FORMATS,
+  MEDIUMS,
   type QuestionFormInput,
 } from "@/lib/validations";
 import { KaTeXRenderer } from "@/components/shared/katex-text";
+import { AdvancedCustomEditor } from "@/components/editor/advanced-custom-editor";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -48,6 +43,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ArrowLeft } from "lucide-react";
 
 const TYPE_LABELS: Record<string, string> = {
   MCQ: "MCQ",
@@ -59,57 +55,39 @@ const TYPE_LABELS: Record<string, string> = {
   CASE_STUDY: "Case Study",
 };
 
+const MEDIUM_LABELS: Record<string, string> = {
+  ENGLISH: "English",
+  GUJARATI: "Gujarati",
+};
+
+// Difficulty → Bloom level mapping
+const DIFFICULTY_BLOOM_MAP: Record<string, { levels: string[]; default: string; label: string }> = {
+  EASY:   { levels: ["REMEMBER", "UNDERSTAND"],           default: "REMEMBER",  label: "Easy → Remember / Understand" },
+  MEDIUM: { levels: ["APPLY", "ANALYZE"],                 default: "APPLY",     label: "Medium → Apply / Analyze" },
+  HARD:   { levels: ["EVALUATE", "CREATE"],               default: "EVALUATE",  label: "Hard → Evaluate / Create" },
+};
+
 type MCQOption = { label: string; text: string; isCorrect: boolean };
 type MatchPair = { left: string; right: string };
 
-export function QuestionFormDialog({
-  open,
-  onOpenChange,
+export function QuestionForm({
   editing,
   tree,
   onSaved,
 }: {
-  open: boolean;
-  onOpenChange: (o: boolean) => void;
   editing: QuestionDetailDTO | null;
   tree: TaxonomyNode[];
-  onSaved: () => void;
+  onSaved?: () => void;
 }) {
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
-        {open && (
-          <QuestionFormInner
-            editing={editing}
-            tree={tree}
-            onSaved={() => {
-              onSaved();
-              onOpenChange(false);
-            }}
-            onCancel={() => onOpenChange(false)}
-          />
-        )}
-      </DialogContent>
-    </Dialog>
-  );
-}
+  const router = useRouter();
 
-function QuestionFormInner({
-  editing,
-  tree,
-  onSaved,
-  onCancel,
-}: {
-  editing: QuestionDetailDTO | null;
-  tree: TaxonomyNode[];
-  onSaved: () => void;
-  onCancel: () => void;
-}) {
   // Editing: infer the class from the tree so the cascade is pre-filled
   const [classIdState, setClassIdState] = useState(() => {
     if (!editing?.subject?.id) return "";
     return tree.find((c) => c.children.some((s) => s.id === editing.subject?.id))?.id ?? "";
   });
+  const [classError, setClassError] = useState<string | null>(null);
+  const submitModeRef = useRef<"save" | "saveNew">("save");
 
   const defaults = useMemo<QuestionFormInput>(() => {
     if (editing) {
@@ -120,6 +98,7 @@ function QuestionFormInner({
         topicId: editing.topicId ?? "",
         questionType: editing.questionType,
         difficulty: editing.difficulty,
+        medium: editing.medium,
         bloomLevel: editing.bloomLevel ?? "UNDERSTAND",
         caseStudyFormat: editing.caseStudyFormat ?? undefined,
         marks: editing.marks,
@@ -138,6 +117,7 @@ function QuestionFormInner({
       topicId: "",
       questionType: "MCQ",
       difficulty: "MEDIUM",
+      medium: "ENGLISH",
       bloomLevel: "UNDERSTAND",
       marks: 1,
       questionText: "",
@@ -164,6 +144,8 @@ function QuestionFormInner({
     control,
     setValue,
     watch,
+    reset,
+    setError,
     formState: { errors, isSubmitting },
   } = useForm<QuestionFormInput>({
     resolver: zodResolver(questionFormSchema),
@@ -176,11 +158,52 @@ function QuestionFormInner({
   const topicId = watch("topicId");
   const questionType = watch("questionType");
   const questionText = watch("questionText");
+  const explanation = watch("explanation");
+  const answerKey = watch("answerKey");
+  const matchPairsValues = watch("matchPairs");
+  const medium = watch("medium");
+  const difficulty = watch("difficulty");
+  const optionsValues = watch("options");
+
+  // Auto-set Bloom level when Difficulty changes (create mode only)
+  useEffect(() => {
+    if (!editing && difficulty) {
+      const mapping = DIFFICULTY_BLOOM_MAP[difficulty];
+      if (mapping) {
+        setValue("bloomLevel", mapping.default as QuestionFormInput["bloomLevel"], { shouldValidate: true });
+      }
+    }
+  }, [difficulty, editing, setValue]);
+
+  // Filter Bloom levels based on selected Difficulty
+  const availableBloomLevels = useMemo(() => {
+    if (!difficulty) return BLOOM_LEVELS;
+    const mapping = DIFFICULTY_BLOOM_MAP[difficulty];
+    return mapping ? mapping.levels : BLOOM_LEVELS;
+  }, [difficulty]);
+
+  // Reset class/subject/chapter/topic when medium changes (create mode only)
+  useEffect(() => {
+    if (!editing) {
+      setClassIdState("");
+      setValue("subjectId", "");
+      setValue("chapterId", "");
+      setValue("topicId", "");
+    }
+  }, [medium, editing, setValue]);
+
+  // ---------- filter tree by medium ----------
+  const filteredTree = useMemo(() => {
+    return tree.map((cl) => ({
+      ...cl,
+      children: cl.children.filter((s) => s.medium === medium),
+    })).filter((cl) => cl.children.length > 0);
+  }, [tree, medium]);
 
   // ---------- cascading options ----------
   const subjects = useMemo(
-    () => tree.find((c) => c.id === classIdState)?.children ?? [],
-    [tree, classIdState]
+    () => filteredTree.find((c) => c.id === classIdState)?.children ?? [],
+    [filteredTree, classIdState]
   );
   const chapters = useMemo(
     () => subjects.find((s) => s.id === subjectId)?.children ?? [],
@@ -198,16 +221,63 @@ function QuestionFormInner({
   // ---------- submit ----------
   const [serverError, setServerError] = useState<string | null>(null);
 
+  // Topic + answer are required in the form even though the shared schema
+  // keeps them optional (bulk import / legacy rows rely on that).
+  const validateRequired = (
+    values: QuestionFormInput
+  ): ("topicId" | "answerKey")[] => {
+    const issues: ("topicId" | "answerKey")[] = [];
+    if (!(values.topicId ?? "").trim()) issues.push("topicId");
+    if (
+      !["MCQ", "MATCH_THE_FOLLOWING", "CASE_STUDY"].includes(values.questionType) &&
+      !(values.answerKey ?? "").trim()
+    ) {
+      issues.push("answerKey");
+    }
+    return issues;
+  };
+
   const onSubmit = handleSubmit(async (values) => {
     setServerError(null);
+
+    if (submitModeRef.current === "saveNew") toast("Saving question…");
+
+    let hasIssue = false;
+    if (!classIdState) {
+      setClassError("Class is required");
+      hasIssue = true;
+    } else {
+      setClassError(null);
+    }
+    for (const path of validateRequired(values)) {
+      setError(path, { message: path === "topicId" ? "Topic is required" : "Answer is required" });
+      hasIssue = true;
+    }
+    if (hasIssue) {
+      toast.error("Please fill all required fields before saving.");
+      return;
+    }
+
     const fd = new FormData();
     fd.set("payload", JSON.stringify(values));
     const res = editing ? await updateQuestion(editing.id, null, fd) : await createQuestion(null, fd);
     if (!res.success) {
       setServerError(res.error);
+      toast.error(res.error ?? "Could not save question.");
       return;
     }
-    onSaved();
+
+    // Save & New → keep the page, reset everything
+    if (!editing && submitModeRef.current === "saveNew") {
+      reset();
+      setClassIdState("");
+      toast.success("Saved. Ready for the next question.");
+      onSaved?.();
+      return;
+    }
+
+    toast.success(res.message ?? "Question saved");
+    router.push("/dashboard/questions");
   });
 
   const typedErrors = errors as unknown as {
@@ -219,38 +289,84 @@ function QuestionFormInner({
 
   return (
     <form onSubmit={onSubmit} className="space-y-4">
-      <DialogHeader>
-        <DialogTitle>{editing ? "Edit Question" : "Add Question"}</DialogTitle>
-        <DialogDescription>
-          Text supports Gujarati Unicode and inline math with $...$ (KaTeX).
-        </DialogDescription>
-      </DialogHeader>
+      <div className="flex items-center gap-3">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={() => router.push("/dashboard/questions")}
+          className="shrink-0"
+        >
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+        <div>
+          <h2 className="font-[Rasa] text-lg font-bold tracking-tight">
+            {editing ? "Edit Question" : "Add Question"}
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            Text supports Gujarati Unicode and inline math with $...$ (KaTeX).
+          </p>
+        </div>
+      </div>
+
+      {/* Medium — first field */}
+      <div className="space-y-1.5">
+        <Label>Medium *</Label>
+        <input type="hidden" {...register("medium")} />
+        <Select
+          items={MEDIUMS.map((m) => ({ value: m, label: MEDIUM_LABELS[m] }))}
+          value={medium}
+          onValueChange={(v) => {
+            if (v) {
+              setValue("medium", v as QuestionFormInput["medium"], { shouldValidate: true });
+              setClassIdState("");
+              setValue("subjectId", "");
+              setValue("chapterId", "");
+              setValue("topicId", "");
+            }
+          }}
+        >
+          <SelectTrigger className="w-full bg-slate-950">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {MEDIUMS.map((m) => (
+              <SelectItem key={m} value={m}>
+                {MEDIUM_LABELS[m]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {errors.medium && <p className="text-xs text-red-400">{errors.medium.message}</p>}
+      </div>
 
       {/* Taxonomy cascade */}
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
-          <Label>Class</Label>
+          <Label>Class *</Label>
           <Select
-            items={tree.map((c) => ({ value: c.id, label: c.name }))}
+            items={filteredTree.map((c) => ({ value: c.id, label: c.name }))}
             value={classIdState || null}
             onValueChange={(v) => {
               setClassIdState(typeof v === "string" ? v : "");
+              setClassError(null);
               setValue("subjectId", "");
               setValue("chapterId", "");
               setValue("topicId", "");
             }}
           >
-            <SelectTrigger className="w-full bg-slate-950">
+            <SelectTrigger className="w-full bg-slate-950" aria-invalid={!!classError}>
               <SelectValue placeholder="Select class" />
             </SelectTrigger>
             <SelectContent>
-              {tree.map((c) => (
+              {filteredTree.map((c) => (
                 <SelectItem key={c.id} value={c.id}>
                   {c.name}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
+          {classError && <p className="text-xs text-red-400">{classError}</p>}
         </div>
 
         <div className="space-y-1.5">
@@ -305,14 +421,14 @@ function QuestionFormInner({
         </div>
 
         <div className="space-y-1.5">
-          <Label>Topic (optional)</Label>
+          <Label>Topic *</Label>
           <input type="hidden" {...register("topicId")} />
           <Select
             items={topics.map((t) => ({ value: t.id, label: t.name }))}
             value={topicId || null}
             onValueChange={(v) => setValue("topicId", typeof v === "string" ? v : "")}
           >
-            <SelectTrigger className="w-full bg-slate-950">
+            <SelectTrigger className="w-full bg-slate-950" aria-invalid={!!errors.topicId}>
               <SelectValue placeholder={chapterId ? "Select topic" : "Select chapter first"} />
             </SelectTrigger>
             <SelectContent>
@@ -323,6 +439,7 @@ function QuestionFormInner({
               ))}
             </SelectContent>
           </Select>
+          {errors.topicId && <p className="text-xs text-red-400">{errors.topicId.message}</p>}
         </div>
       </div>
 
@@ -376,7 +493,7 @@ function QuestionFormInner({
         <div className="space-y-1.5">
           <Label>Bloom level</Label>
           <Select
-            items={BLOOM_LEVELS.map((b) => ({ value: b, label: titleCase(b) }))}
+            items={availableBloomLevels.map((b) => ({ value: b, label: titleCase(b) }))}
             value={watch("bloomLevel")}
             onValueChange={(v) => v && setValue("bloomLevel", v as QuestionFormInput["bloomLevel"], { shouldValidate: true })}
           >
@@ -384,13 +501,18 @@ function QuestionFormInner({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {BLOOM_LEVELS.map((b) => (
+              {availableBloomLevels.map((b) => (
                 <SelectItem key={b} value={b}>
                   {titleCase(b)}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
+          {difficulty && DIFFICULTY_BLOOM_MAP[difficulty] && (
+            <p className="text-[11px] text-muted-foreground">
+              {DIFFICULTY_BLOOM_MAP[difficulty].label}
+            </p>
+          )}
         </div>
       </div>
 
@@ -432,11 +554,10 @@ function QuestionFormInner({
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5">
           <Label>Question text *</Label>
-          <Textarea
-            rows={6}
-            placeholder={"ગુજરાતી અથવા English…\ne.g. $x^2 + 1$ નું મૂલ્ય શું છે?"}
-            {...register("questionText")}
-            className="bg-slate-950"
+          <AdvancedCustomEditor
+            value={questionText}
+            onChange={(v) => setValue("questionText", v, { shouldValidate: true })}
+            placeholder={"Type or build the question…\n• Σ → math with live preview\n• OCR → paste a photo/screenshot of text\n• ગુજરાતી → keyboard & transliteration"}
           />
           {errors.questionText && <p className="text-xs text-red-400">{errors.questionText.message}</p>}
         </div>
@@ -473,25 +594,29 @@ function QuestionFormInner({
             </Button>
           </div>
           {mcqArray.fields.map((f, i) => (
-            <div key={f.id} className="flex items-center gap-2">
+            <div key={f.id} className="flex items-start gap-2">
               <input
                 type="checkbox"
-                className="size-4 accent-blue-600"
+                className="mt-2 size-4 accent-blue-600"
                 aria-label={`Option ${i + 1} correct`}
                 {...register(`options.${i}.isCorrect` as const)}
               />
-              <Badge variant="outline" className="w-7 justify-center">
+              <Badge variant="outline" className="mt-1.5 w-7 shrink-0 justify-center">
                 {String.fromCharCode(65 + i)}
               </Badge>
-              <Input
-                {...register(`options.${i}.text` as const)}
-                placeholder={`Option ${String.fromCharCode(65 + i)}`}
-                className="bg-slate-950"
-              />
+              <div className="min-w-0 flex-1">
+                <AdvancedCustomEditor
+                  compact
+                  value={optionsValues?.[i]?.text ?? ""}
+                  onChange={(v) => setValue(`options.${i}.text` as const, v, { shouldValidate: true })}
+                  placeholder={`Option ${String.fromCharCode(65 + i)} — text, $...$ math, ગુજરાતી`}
+                />
+              </div>
               <Button
                 type="button"
                 size="icon-xs"
                 variant="ghost"
+                className="mt-1.5"
                 disabled={mcqArray.fields.length <= 2}
                 onClick={() => mcqArray.remove(i)}
                 aria-label="Remove option"
@@ -519,14 +644,29 @@ function QuestionFormInner({
             </Button>
           </div>
           {pairArray.fields.map((f, i) => (
-            <div key={f.id} className="flex items-center gap-2">
-              <Input {...register(`matchPairs.${i}.left` as const)} placeholder="Left item" className="bg-slate-950" />
-              <span className="text-slate-500">→</span>
-              <Input {...register(`matchPairs.${i}.right` as const)} placeholder="Right item" className="bg-slate-950" />
+            <div key={f.id} className="flex items-start gap-2">
+              <div className="min-w-0 flex-1">
+                <AdvancedCustomEditor
+                  compact
+                  value={matchPairsValues?.[i]?.left ?? ""}
+                  onChange={(v) => setValue(`matchPairs.${i}.left` as const, v, { shouldValidate: true })}
+                  placeholder="Left item"
+                />
+              </div>
+              <span className="mt-2 shrink-0 text-slate-500">→</span>
+              <div className="min-w-0 flex-1">
+                <AdvancedCustomEditor
+                  compact
+                  value={matchPairsValues?.[i]?.right ?? ""}
+                  onChange={(v) => setValue(`matchPairs.${i}.right` as const, v, { shouldValidate: true })}
+                  placeholder="Right item"
+                />
+              </div>
               <Button
                 type="button"
                 size="icon-xs"
                 variant="ghost"
+                className="mt-1.5"
                 disabled={pairArray.fields.length <= 2}
                 onClick={() => pairArray.remove(i)}
                 aria-label="Remove pair"
@@ -539,37 +679,46 @@ function QuestionFormInner({
         </div>
       )}
 
-      {/* Answer key + explanation */}
-      <div className="grid gap-3 sm:grid-cols-2">
-        {questionType !== "MCQ" && (
-          <div className="space-y-1.5">
-            <Label>Answer key {questionType === "TRUE_FALSE" ? "" : "(optional)"}</Label>
-            {questionType === "TRUE_FALSE" ? (
-              <Select
-                items={[
-                  { value: "True", label: "True" },
-                  { value: "False", label: "False" },
-                ]}
-                value={watch("answerKey") || null}
-                onValueChange={(v) => setValue("answerKey", typeof v === "string" ? v : "")}
-              >
-                <SelectTrigger className="w-full bg-slate-950">
-                  <SelectValue placeholder="Select answer" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="True">True</SelectItem>
-                  <SelectItem value="False">False</SelectItem>
-                </SelectContent>
-              </Select>
-            ) : (
-              <Textarea rows={2} {...register("answerKey")} className="bg-slate-950" />
-            )}
-          </div>
-        )}
+      {/* Answer key */}
+      {questionType !== "MCQ" && (
         <div className="space-y-1.5">
-          <Label>Explanation (optional)</Label>
-          <Textarea rows={2} {...register("explanation")} className="bg-slate-950" />
+          <Label>Answer key {questionType === "TRUE_FALSE" ? "" : "(optional)"}</Label>
+          {questionType === "TRUE_FALSE" ? (
+            <Select
+              items={[
+                { value: "True", label: "True" },
+                { value: "False", label: "False" },
+              ]}
+              value={watch("answerKey") || null}
+              onValueChange={(v) => setValue("answerKey", typeof v === "string" ? v : "")}
+            >
+              <SelectTrigger className="w-full bg-slate-950">
+                <SelectValue placeholder="Select answer" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="True">True</SelectItem>
+                <SelectItem value="False">False</SelectItem>
+              </SelectContent>
+            </Select>
+          ) : (
+            <AdvancedCustomEditor
+              value={answerKey ?? ""}
+              onChange={(v) => setValue("answerKey", v, { shouldValidate: true })}
+              placeholder={"Answer key — $...$ math, ગુજરાતી, or typed text"}
+            />
+          )}
         </div>
+      )}
+
+      {/* Explanation — full width (solutions are large) */}
+      <div className="space-y-1.5">
+        <Label>Explanation (optional)</Label>
+        <AdvancedCustomEditor
+          value={explanation ?? ""}
+          onChange={(v) => setValue("explanation", v, { shouldValidate: true })}
+          placeholder={"Explain the solution…\n• Σ → math with live preview\n• OCR → paste a photo/screenshot of text\n• ગુજરાતી → keyboard & transliteration"}
+        />
+        {errors.explanation && <p className="text-xs text-red-400">{errors.explanation.message}</p>}
       </div>
 
       {/* Tags + PYQ */}
@@ -589,14 +738,32 @@ function QuestionFormInner({
 
       {serverError && <p className="text-sm text-red-400">{serverError}</p>}
 
-      <DialogFooter>
-        <Button type="button" variant="outline" onClick={onCancel}>
+      <div className="flex items-center justify-end gap-3 pt-2">
+        <Button type="button" variant="outline" onClick={() => router.push("/dashboard/questions")}>
           Cancel
         </Button>
-        <Button type="submit" disabled={isSubmitting}>
+        {!editing && (
+          <Button
+            type="submit"
+            variant="secondary"
+            disabled={isSubmitting}
+            onClick={() => {
+              submitModeRef.current = "saveNew";
+            }}
+          >
+            {isSubmitting ? "Saving…" : "Save & New"}
+          </Button>
+        )}
+        <Button
+          type="submit"
+          disabled={isSubmitting}
+          onClick={() => {
+            submitModeRef.current = "save";
+          }}
+        >
           {isSubmitting ? "Saving…" : editing ? "Update question" : "Create question"}
         </Button>
-      </DialogFooter>
+      </div>
     </form>
   );
 }

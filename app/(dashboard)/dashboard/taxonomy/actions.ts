@@ -106,6 +106,7 @@ export async function createSubject(
   const parsed = subjectSchema.safeParse({
     name: formData.get("name"),
     code: formData.get("code") || undefined,
+    medium: formData.get("medium") || "ENGLISH",
     classLevelId: formData.get("classLevelId"),
   });
   if (!parsed.success) return { success: false, error: firstIssueMessage(parsed.error) };
@@ -121,6 +122,7 @@ export async function createSubject(
       data: {
         name: parsed.data.name,
         code: parsed.data.code || null,
+        medium: parsed.data.medium,
         classLevelId: parsed.data.classLevelId,
         schoolId,
       },
@@ -145,6 +147,7 @@ export async function updateSubject(
   const parsed = subjectSchema.safeParse({
     name: formData.get("name"),
     code: formData.get("code") || undefined,
+    medium: formData.get("medium") || "ENGLISH",
     classLevelId: formData.get("classLevelId"),
   });
   if (!parsed.success) return { success: false, error: firstIssueMessage(parsed.error) };
@@ -155,6 +158,7 @@ export async function updateSubject(
       data: {
         name: parsed.data.name,
         code: parsed.data.code || null,
+        medium: parsed.data.medium,
         classLevelId: parsed.data.classLevelId,
       },
     });

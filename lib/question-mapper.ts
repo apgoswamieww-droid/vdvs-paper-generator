@@ -11,6 +11,7 @@ import type {
   DifficultyLevel,
   BloomLevel,
   CaseStudyFormat,
+  Medium,
 } from "@prisma/client";
 import type { QuestionFormValue } from "@/lib/validations";
 
@@ -18,6 +19,7 @@ import type { QuestionFormValue } from "@/lib/validations";
 export function toQuestionData(v: QuestionFormValue): {
   questionType: QuestionType;
   difficulty: DifficultyLevel;
+  medium: Medium;
   bloomLevel: BloomLevel;
   caseStudyFormat: CaseStudyFormat | null;
   marks: number;
@@ -48,6 +50,7 @@ export function toQuestionData(v: QuestionFormValue): {
   return {
     questionType: v.questionType as QuestionType,
     difficulty: v.difficulty as DifficultyLevel,
+    medium: v.medium as Medium,
     bloomLevel: v.bloomLevel as BloomLevel,
     caseStudyFormat: (v.caseStudyFormat as CaseStudyFormat) ?? null,
     marks: v.marks,

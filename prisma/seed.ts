@@ -12,8 +12,9 @@
  *   and KaTeX math formulas.
  */
 
-import { PrismaClient, UserRole, PlanTier, QuestionType, DifficultyLevel, BloomLevel } from "@prisma/client";
+import { PrismaClient, UserRole, PlanTier, QuestionType, DifficultyLevel, BloomLevel, Medium } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { randomQuestionCode } from "../lib/question-code";
 
 const prisma = new PrismaClient();
 
@@ -109,19 +110,19 @@ async function main() {
   // 4. Subjects under Std 10
   // ──────────────────────────────────────────────────
   const mathSubj = await prisma.subject.upsert({
-    where: { classLevelId_name: { classLevelId: std10.id, name: "Mathematics" } },
+    where: { classLevelId_name_medium: { classLevelId: std10.id, name: "Mathematics", medium: Medium.ENGLISH } },
     update: {},
-    create: { name: "Mathematics", code: "MATH10", classLevelId: std10.id, schoolId: school.id },
+    create: { name: "Mathematics", code: "MATH10", medium: Medium.ENGLISH, classLevelId: std10.id, schoolId: school.id },
   });
   const sciSubj = await prisma.subject.upsert({
-    where: { classLevelId_name: { classLevelId: std10.id, name: "Science" } },
+    where: { classLevelId_name_medium: { classLevelId: std10.id, name: "Science", medium: Medium.ENGLISH } },
     update: {},
-    create: { name: "Science", code: "SCI10", classLevelId: std10.id, schoolId: school.id },
+    create: { name: "Science", code: "SCI10", medium: Medium.ENGLISH, classLevelId: std10.id, schoolId: school.id },
   });
   const engSubj = await prisma.subject.upsert({
-    where: { classLevelId_name: { classLevelId: std10.id, name: "English" } },
+    where: { classLevelId_name_medium: { classLevelId: std10.id, name: "English", medium: Medium.ENGLISH } },
     update: {},
-    create: { name: "English", code: "ENG10", classLevelId: std10.id, schoolId: school.id },
+    create: { name: "English", code: "ENG10", medium: Medium.ENGLISH, classLevelId: std10.id, schoolId: school.id },
   });
   console.log("✅ 3 subjects: Mathematics, Science, English");
 
@@ -397,12 +398,24 @@ async function main() {
   ];
 
   let created = 0;
+  const usedCodes = new Set<string>();
   for (const q of qData) {
+    let code = "";
+    for (let i = 0; i < 5; i++) {
+      const candidate = randomQuestionCode();
+      if (!usedCodes.has(candidate)) {
+        code = candidate;
+        usedCodes.add(candidate);
+        break;
+      }
+    }
     await prisma.question.create({
       data: {
+        code,
         questionText: q.questionText,
         questionType: q.questionType,
         difficulty: q.difficulty,
+        medium: Medium.ENGLISH,
         bloomLevel: q.bloomLevel,
         marks: q.marks,
         options: q.options ?? undefined,

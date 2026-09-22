@@ -11,8 +11,9 @@ import mammoth from "mammoth";
 import { revalidatePath } from "next/cache";
 import prisma from "@/lib/prisma";
 import { requireSession } from "@/lib/session";
-import { questionFormSchema, type QuestionFormValue } from "@/lib/validations";
+import { questionFormSchema } from "@/lib/validations";
 import { toQuestionData } from "@/lib/question-mapper";
+import { randomQuestionCode } from "@/lib/question-code";
 import { parseDocxQuestions } from "@/lib/docx-import";
 
 const MAX_DOCX_BYTES = 2 * 1024 * 1024; // 2 MB
@@ -130,10 +131,29 @@ export async function importQuestionsFromDocx(
   try {
     const result = await prisma.$transaction(async (tx) => {
       let imported = 0;
+      const usedCodes = new Set<string>();
       for (const d of validDrafts) {
+        // Generate a unique 6-digit code (retry on collision).
+        let code = "";
+        for (let i = 0; i < 5; i++) {
+          const candidate = randomQuestionCode();
+          if (usedCodes.has(candidate)) continue;
+          const existing = await tx.question.findUnique({
+            where: { code: candidate },
+            select: { id: true },
+          });
+          if (!existing) {
+            code = candidate;
+            usedCodes.add(candidate);
+            break;
+          }
+        }
+        if (!code) throw new Error("duplicate_code");
+
         await tx.question.create({
           data: {
             ...d.data,
+            code,
             schoolId: session.schoolId,
             subjectId,
             chapterId,

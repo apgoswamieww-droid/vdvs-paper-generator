@@ -20,11 +20,13 @@ export const QUESTION_TYPES = [
 export const DIFFICULTIES = ["EASY", "MEDIUM", "HARD"] as const;
 export const BLOOM_LEVELS = ["REMEMBER", "UNDERSTAND", "APPLY", "ANALYZE", "EVALUATE", "CREATE"] as const;
 export const CASE_STUDY_FORMATS = ["INLINE", "SHARED_PASSAGE"] as const;
+export const MEDIUMS = ["ENGLISH", "GUJARATI"] as const;
 
 export const questionTypeEnum = z.enum(QUESTION_TYPES);
 export const difficultyEnum = z.enum(DIFFICULTIES);
 export const bloomEnum = z.enum(BLOOM_LEVELS);
 export const caseStudyFormatEnum = z.enum(CASE_STUDY_FORMATS);
+export const mediumEnum = z.enum(MEDIUMS);
 
 // ------------------------------------------------------------
 //  MCQ / matching option shapes (stored as JSON in `options`)
@@ -51,6 +53,7 @@ export const classLevelSchema = z.object({
 export const subjectSchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(100),
   code: z.string().trim().max(20).optional().or(z.literal("")),
+  medium: mediumEnum,
   classLevelId: z.string().min(1, "Class is required"),
 });
 
@@ -73,6 +76,7 @@ export const questionBaseSchema = z.object({
   topicId: z.string().optional().or(z.literal("")),
   questionType: questionTypeEnum,
   difficulty: difficultyEnum,
+  medium: mediumEnum,
   bloomLevel: bloomEnum,
   caseStudyFormat: caseStudyFormatEnum.optional(),
   marks: z.coerce.number().min(0.5).max(100),
@@ -142,6 +146,7 @@ export const questionFilterSchema = z.object({
   topicId: z.string().trim().optional(),
   questionType: questionTypeEnum.optional(),
   difficulty: difficultyEnum.optional(),
+  medium: mediumEnum.optional(),
   bloomLevel: bloomEnum.optional(),
   previousYearTag: z.string().trim().max(60).optional(),
   page: z.coerce.number().int().min(1).default(1),

@@ -66,6 +66,11 @@ enum CaseStudyFormat {
   SHARED_PASSAGE
 }
 
+enum Medium {
+  ENGLISH
+  GUJARATI
+}
+
 enum ImportStatus {
   PENDING
   PARTIAL
@@ -262,6 +267,7 @@ model Subject {
   id        String   @id @default(cuid())
   name      String
   code      String?
+  medium    Medium   @default(ENGLISH)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -274,7 +280,7 @@ model Subject {
   questions Question[]
   papers    Paper[]
 
-  @@unique([classLevelId, name])
+  @@unique([classLevelId, name, medium])
   @@index([schoolId])
   @@index([classLevelId])
   @@map("subjects")
@@ -284,6 +290,7 @@ model Chapter {
   id        String   @id @default(cuid())
   name      String
   order     Int      @default(0)
+  medium    Medium   @default(ENGLISH)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -321,9 +328,11 @@ model Topic {
 
 model Question {
   id           String          @id @default(cuid())
+  code         String          @unique // 6-digit human-friendly ID (e.g. 483920)
   questionText String          @db.Text
   questionType QuestionType
   difficulty   DifficultyLevel @default(MEDIUM)
+  medium       Medium          @default(ENGLISH)
   marks        Float           @default(1)
   options      Json? // For MCQ: [{ "label": "A", "text": "...", "isCorrect": true }]
   answerKey    String?         @db.Text

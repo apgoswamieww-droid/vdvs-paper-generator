@@ -6,8 +6,6 @@ import { Metadata } from "next";
 import { requireSession } from "@/lib/session";
 import { getTaxonomyTree, listQuestions } from "./actions";
 import { QuestionsClient } from "./questions-client";
-import { Button } from "@/components/ui/button";
-import { Plus, Upload } from "lucide-react";
 
 export const metadata: Metadata = {
   title: "Question Bank",

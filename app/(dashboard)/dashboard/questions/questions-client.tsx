@@ -5,6 +5,7 @@
 // ============================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import {
   listQuestions,
   deleteQuestion,
@@ -13,6 +14,7 @@ import {
 } from "./actions";
 import type { PaginatedResponse } from "@/types";
 import type { QuestionFilterInput } from "@/lib/validations";
+import { MEDIUMS } from "@/lib/validations";
 import { KaTeXRenderer } from "@/components/shared/katex-text";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,7 +38,6 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog, showResultToast, showErrorToast } from "@/components/shared";
 import { Plus, Upload, Search, X, Pencil, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
-import { QuestionFormDialog } from "./question-form-dialog";
 import { ImportDialog } from "./import/import-dialog";
 
 type Filters = Partial<QuestionFilterInput>;
@@ -67,6 +68,10 @@ const BLOOM_LEVELS = [
 ];
 const QUESTION_TYPES = Object.keys(TYPE_LABELS);
 const DIFFICULTIES = ["EASY", "MEDIUM", "HARD"];
+const MEDIUM_LABELS: Record<string, string> = {
+  ENGLISH: "English",
+  GUJARATI: "Gujarati",
+};
 
 export function QuestionsClient({
   initialData,
@@ -75,6 +80,7 @@ export function QuestionsClient({
   initialData: PaginatedResponse<QuestionListDTO>;
   tree: TaxonomyNode[];
 }) {
+  const router = useRouter();
   const [data, setData] = useState(initialData);
   const [filters, setFilters] = useState<Filters>({ page: 1, pageSize: 20 });
   const [searchInput, setSearchInput] = useState("");
@@ -83,8 +89,6 @@ export function QuestionsClient({
   const firstRun = useRef(true);
 
   // Dialog state
-  const [formOpen, setFormOpen] = useState(false);
-  const [editing, setEditing] = useState<QuestionDetailLite>(null);
   const [importOpen, setImportOpen] = useState(false);
 
   // Delete confirmation state
@@ -161,7 +165,7 @@ export function QuestionsClient({
     <div className="space-y-4">
       {/* ------- Toolbar ------- */}
       <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={() => { setEditing(null); setFormOpen(true); }} className="gap-1.5">
+        <Button onClick={() => router.push("/dashboard/questions/new")} className="gap-1.5">
           <Plus className="h-4 w-4" />
           Add Question
         </Button>
@@ -186,6 +190,20 @@ export function QuestionsClient({
       <Card>
         <CardContent className="p-3">
           <div className="flex flex-wrap items-center gap-2">
+            <SelectFilter
+              placeholder="Medium"
+              value={(filters.medium as string) || null}
+              onChange={(v) =>
+                setFilter(
+                  "medium",
+                  (v ?? undefined) as Filters["medium"]
+                )
+              }
+              items={MEDIUMS.map((m) => ({
+                value: m,
+                label: MEDIUM_LABELS[m],
+              }))}
+            />
             <SelectFilter
               placeholder="Class"
               value={classId || null}
@@ -303,7 +321,9 @@ export function QuestionsClient({
           <Table>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
+                <TableHead className="w-20">ID</TableHead>
                 <TableHead>Question</TableHead>
+                <TableHead>Medium</TableHead>
                 <TableHead>Type</TableHead>
                 <TableHead>Difficulty</TableHead>
                 <TableHead className="text-center">Marks</TableHead>
@@ -317,7 +337,7 @@ export function QuestionsClient({
               {isPending &&
                 Array.from({ length: 5 }).map((_, i) => (
                   <TableRow key={`skel-${i}`}>
-                    {Array.from({ length: 8 }).map((__, j) => (
+                    {Array.from({ length: 10 }).map((__, j) => (
                       <TableCell key={j}>
                         <Skeleton className="h-4 w-full" />
                       </TableCell>
@@ -327,7 +347,7 @@ export function QuestionsClient({
               {!isPending && items.length === 0 && (
                 <TableRow>
                   <TableCell
-                    colSpan={8}
+                    colSpan={10}
                     className="h-32 text-center text-muted-foreground"
                   >
                     No questions match these filters.
@@ -337,6 +357,9 @@ export function QuestionsClient({
               {!isPending &&
                 items.map((q) => (
                   <TableRow key={q.id}>
+                    <TableCell className="font-mono text-[11px] tabular-nums text-muted-foreground">
+                      #{q.code}
+                    </TableCell>
                     <TableCell className="max-w-sm">
                       <div className="line-clamp-2">
                         <KaTeXRenderer text={q.questionText} />
@@ -349,6 +372,11 @@ export function QuestionsClient({
                           {q.previousYearTag}
                         </Badge>
                       )}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="secondary" className="text-[11px]">
+                        {MEDIUM_LABELS[q.medium] ?? q.medium}
+                      </Badge>
                     </TableCell>
                     <TableCell>
                       <Badge variant="secondary" className="text-[11px]">
@@ -389,16 +417,7 @@ export function QuestionsClient({
                           size="icon-xs"
                           variant="ghost"
                           aria-label="Edit question"
-                          onClick={async () => {
-                            const { getQuestionById } = await import(
-                              "./actions"
-                            );
-                            const detail = await getQuestionById(q.id);
-                            if (detail) {
-                              setEditing(detail);
-                              setFormOpen(true);
-                            }
-                          }}
+                          onClick={() => router.push(`/dashboard/questions/${q.id}`)}
                         >
                           <Pencil className="h-3 w-3" />
                         </Button>
@@ -469,16 +488,6 @@ export function QuestionsClient({
       </div>
 
       {/* ------- Dialogs ------- */}
-      <QuestionFormDialog
-        open={formOpen}
-        onOpenChange={(o) => {
-          setFormOpen(o);
-          if (!o) setEditing(null);
-        }}
-        editing={editing}
-        tree={tree}
-        onSaved={refetch}
-      />
       <ImportDialog
         open={importOpen}
         onOpenChange={setImportOpen}
@@ -502,10 +511,6 @@ export function QuestionsClient({
     </div>
   );
 }
-
-type QuestionDetailLite = Awaited<
-  ReturnType<typeof import("./actions").getQuestionById>
->;
 
 // ------------------------------------------------------------
 //  Small select wrapper for filters
