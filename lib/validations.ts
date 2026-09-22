@@ -156,3 +156,86 @@ export type QuestionFilterInput = z.infer<typeof questionFilterSchema>;
 export type ActionState =
   | { success: true; message?: string; id?: string }
   | { success: false; error: string; fieldErrors?: Record<string, string> };
+
+// ============================================================
+//  Paper Builder — Phase 3
+// ============================================================
+
+export const PAPER_GENERATION_MODES = ["MANUAL", "BLUEPRINT"] as const;
+export const paperGenerationModeEnum = z.enum(PAPER_GENERATION_MODES);
+
+// --- Blueprint rule: what to pick for a single chapter ---
+export const blueprintRuleSchema = z.object({
+  chapterId: z.string().min(1, "Chapter is required"),
+  chapterName: z.string().optional(), // display only, not saved
+  questionType: questionTypeEnum,
+  count: z.coerce.number().int().min(1, "At least 1 question").max(50),
+  marksEach: z.coerce.number().min(0.5, "Minimum 0.5 marks").max(100),
+  difficultyDistribution: z.object({
+    easy: z.coerce.number().min(0).max(100).default(0),
+    medium: z.coerce.number().min(0).max(100).default(0),
+    hard: z.coerce.number().min(0).max(100).default(0),
+  }).refine(
+    (d) => d.easy + d.medium + d.hard === 100,
+    { message: "Difficulty percentages must sum to 100%" }
+  ),
+});
+
+export type BlueprintRuleInput = z.input<typeof blueprintRuleSchema>;
+export type BlueprintRuleValue = z.output<typeof blueprintRuleSchema>;
+
+// --- Paper creation (manual mode) ---
+export const createManualPaperSchema = z.object({
+  title: z.string().trim().min(1, "Title is required").max(200),
+  description: z.string().trim().max(1000).optional().or(z.literal("")),
+  subjectId: z.string().optional().or(z.literal("")),
+  duration: z.coerce.number().int().min(1, "Duration is required").max(600).optional(),
+  totalMarks: z.coerce.number().min(1, "Total marks is required").max(10000),
+  passingMarks: z.coerce.number().min(0).max(10000).optional().or(z.literal("")),
+  instructions: z.string().trim().max(5000).optional().or(z.literal("")),
+  schoolHeader: z.string().trim().max(500).optional().or(z.literal("")),
+  watermarkText: z.string().trim().max(100).optional().or(z.literal("")),
+  generationMode: z.literal("MANUAL"),
+  sections: z.array(z.object({
+    title: z.string().trim().min(1, "Section title is required").max(100),
+    instructions: z.string().trim().max(500).optional().or(z.literal("")),
+    questionIds: z.array(z.string().min(1)).min(1, "Select at least one question"),
+  })).min(1, "Add at least one section"),
+});
+
+export type CreateManualPaperInput = z.input<typeof createManualPaperSchema>;
+export type CreateManualPaperValue = z.output<typeof createManualPaperSchema>;
+
+// --- Paper creation (blueprint / auto mode) ---
+export const createBlueprintPaperSchema = z.object({
+  title: z.string().trim().min(1, "Title is required").max(200),
+  description: z.string().trim().max(1000).optional().or(z.literal("")),
+  subjectId: z.string().min(1, "Subject is required for blueprint mode"),
+  classLevelId: z.string().min(1, "Class is required for blueprint mode"),
+  duration: z.coerce.number().int().min(1, "Duration is required").max(600).optional(),
+  totalMarks: z.coerce.number().min(1, "Total marks is required").max(10000),
+  passingMarks: z.coerce.number().min(0).max(10000).optional().or(z.literal("")),
+  instructions: z.string().trim().max(5000).optional().or(z.literal("")),
+  schoolHeader: z.string().trim().max(500).optional().or(z.literal("")),
+  watermarkText: z.string().trim().max(100).optional().or(z.literal("")),
+  generationMode: z.literal("BLUEPRINT"),
+  rules: z.array(blueprintRuleSchema).min(1, "Add at least one blueprint rule"),
+});
+
+export type CreateBlueprintPaperInput = z.input<typeof createBlueprintPaperSchema>;
+export type CreateBlueprintPaperValue = z.output<typeof createBlueprintPaperSchema>;
+
+// --- Paper update (customization fields) ---
+export const updatePaperSchema = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
+  description: z.string().trim().max(1000).optional().or(z.literal("")),
+  duration: z.coerce.number().int().min(1).max(600).optional(),
+  totalMarks: z.coerce.number().min(0).max(10000).optional(),
+  passingMarks: z.coerce.number().min(0).max(10000).optional().or(z.literal("")),
+  instructions: z.string().trim().max(5000).optional().or(z.literal("")),
+  schoolHeader: z.string().trim().max(500).optional().or(z.literal("")),
+  watermarkText: z.string().trim().max(100).optional().or(z.literal("")),
+  status: z.enum(["DRAFT", "PUBLISHED", "ARCHIVED"]).optional(),
+});
+
+export type UpdatePaperInput = z.input<typeof updatePaperSchema>;

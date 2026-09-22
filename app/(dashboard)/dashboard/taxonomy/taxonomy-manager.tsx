@@ -4,11 +4,13 @@
 //  Taxonomy Manager (client) — Class → Subject → Chapter → Topic
 //
 //  Four columns, each listing the selected parent's children
-//  with add/edit/delete. Create/edit uses a small dialog that
-//  calls the taxonomy Server Actions directly.
+//  with add/edit/delete. Create/edit uses a dialog that calls
+//  the taxonomy Server Actions, passing the parent id explicitly.
+//  Feedback: ConfirmDialog for deletes, toasts for results,
+//  LoadingButton spinners while saving.
 // ============================================================
 
-import { useActionState, useEffect, useMemo, useState } from "react";
+import { useActionState, useEffect, useMemo, useState, useTransition } from "react";
 import {
   createClassLevel,
   updateClassLevel,
@@ -25,6 +27,12 @@ import {
 } from "./actions";
 import { getTaxonomyTree, type TaxonomyNode } from "../questions/actions";
 import type { ActionState } from "@/lib/validations";
+import {
+  LoadingButton,
+  ConfirmDialog,
+  showResultToast,
+  showErrorToast,
+} from "@/components/shared";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,7 +50,7 @@ import { cn } from "cn";
 type Entity = "class" | "subject" | "chapter" | "topic";
 
 type DialogState =
-  | { mode: "create"; entity: Entity }
+  | { mode: "create"; entity: Entity; parentId?: string }
   | {
       mode: "edit";
       entity: Entity;
@@ -53,15 +61,39 @@ type DialogState =
     }
   | null;
 
+// Parent field name expected by each entity's server action
+const PARENT_FIELD: Record<Entity, string | null> = {
+  class: null,
+  subject: "classLevelId",
+  chapter: "subjectId",
+  topic: "chapterId",
+};
+
+const ENTITY_LABELS: Record<Entity, string> = {
+  class: "Class",
+  subject: "Subject",
+  chapter: "Chapter",
+  topic: "Topic",
+};
+
 export function TaxonomyManager({ initialTree }: { initialTree: TaxonomyNode[] }) {
   const [tree, setTree] = useState<TaxonomyNode[]>(initialTree);
   const [selected, setSelected] = useState({ classId: "", subjectId: "", chapterId: "" });
   const [dialog, setDialog] = useState<DialogState>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
+
+  // Delete confirmation state
+  const [deleteTarget, setDeleteTarget] = useState<{ entity: Entity; id: string; name: string } | null>(null);
+  const [deletePending, startDeleteTransition] = useTransition();
+
+  const [refreshing, setRefreshing] = useState(false);
 
   const refresh = async () => {
-    setTree(await getTaxonomyTree());
-    setRefreshKey((k) => k + 1);
+    setRefreshing(true);
+    try {
+      setTree(await getTaxonomyTree());
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const classes = tree;
@@ -78,76 +110,111 @@ export function TaxonomyManager({ initialTree }: { initialTree: TaxonomyNode[] }
     [chapters, selected.chapterId]
   );
 
+  async function handleDelete() {
+    if (!deleteTarget) return;
+    const { entity, id, name } = deleteTarget;
+    const actions = {
+      class: deleteClassLevel,
+      subject: deleteSubject,
+      chapter: deleteChapter,
+      topic: deleteTopic,
+    } as const;
+
+    startDeleteTransition(async () => {
+      try {
+        const res = await actions[entity](id);
+        showResultToast(res, { errorMessage: `Could not delete ${name}.` });
+        if (res.success) {
+          // Clear selection if the deleted node was selected
+          setSelected((s) => {
+            const next = { ...s };
+            if (entity === "class") next.classId = "";
+            if (entity === "class" || entity === "subject") next.subjectId = "";
+            if (entity !== "topic") next.chapterId = "";
+            return next;
+          });
+          setDeleteTarget(null);
+          await refresh();
+        }
+      } catch {
+        showErrorToast();
+        setDeleteTarget(null);
+      }
+    });
+  }
+
   return (
-    <div className="space-y-4" data-refresh={refreshKey}>
+    <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Column
           title="Classes"
           items={classes}
+          refreshing={refreshing}
           selectedId={selected.classId}
           onSelect={(id) => setSelected({ classId: id, subjectId: "", chapterId: "" })}
           onAdd={() => setDialog({ mode: "create", entity: "class" })}
           onEdit={(n) => setDialog({ mode: "edit", entity: "class", id: n.id, name: n.name })}
-          onDelete={async (id) => {
-            await deleteClassLevel(id);
-            await refresh();
-          }}
+          onDelete={(n) => setDeleteTarget({ entity: "class", id: n.id, name: n.name })}
           emptyHint="Add Std 6 … Std 12"
         />
         <Column
           title="Subjects"
           items={subjects}
+          refreshing={refreshing}
           selectedId={selected.subjectId}
           onSelect={(id) => setSelected((s) => ({ ...s, subjectId: id, chapterId: "" }))}
-          onAdd={() => setDialog({ mode: "create", entity: "subject" })}
+          onAdd={() => setDialog({ mode: "create", entity: "subject", parentId: selected.classId })}
           addDisabled={!selected.classId}
           onEdit={(n) =>
             setDialog({ mode: "edit", entity: "subject", id: n.id, name: n.name, code: n.code })
           }
-          onDelete={async (id) => {
-            await deleteSubject(id);
-            await refresh();
-          }}
+          onDelete={(n) => setDeleteTarget({ entity: "subject", id: n.id, name: n.name })}
           emptyHint={selected.classId ? "No subjects yet" : "Select a class first"}
         />
         <Column
           title="Chapters"
           items={chapters}
+          refreshing={refreshing}
           selectedId={selected.chapterId}
           onSelect={(id) => setSelected((s) => ({ ...s, chapterId: id }))}
-          onAdd={() => setDialog({ mode: "create", entity: "chapter" })}
+          onAdd={() => setDialog({ mode: "create", entity: "chapter", parentId: selected.subjectId })}
           addDisabled={!selected.subjectId}
           onEdit={(n) =>
             setDialog({ mode: "edit", entity: "chapter", id: n.id, name: n.name, order: n.order })
           }
-          onDelete={async (id) => {
-            await deleteChapter(id);
-            await refresh();
-          }}
+          onDelete={(n) => setDeleteTarget({ entity: "chapter", id: n.id, name: n.name })}
           emptyHint={selected.subjectId ? "No chapters yet" : "Select a subject first"}
         />
         <Column
           title="Topics"
           items={topics}
+          refreshing={refreshing}
           selectedId=""
           onSelect={() => {}}
-          onAdd={() => setDialog({ mode: "create", entity: "topic" })}
+          onAdd={() => setDialog({ mode: "create", entity: "topic", parentId: selected.chapterId })}
           addDisabled={!selected.chapterId}
           onEdit={(n) =>
             setDialog({ mode: "edit", entity: "topic", id: n.id, name: n.name, order: n.order })
           }
-          onDelete={async (id) => {
-            await deleteTopic(id);
-            await refresh();
-          }}
+          onDelete={(n) => setDeleteTarget({ entity: "topic", id: n.id, name: n.name })}
           emptyHint={selected.chapterId ? "No topics yet" : "Select a chapter first"}
         />
       </div>
 
-      <TaxonomyDialog
-        dialog={dialog}
-        onClose={() => setDialog(null)}
-        onDone={refresh}
+      <TaxonomyDialog dialog={dialog} onClose={() => setDialog(null)} onDone={refresh} />
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={(o) => !o && setDeleteTarget(null)}
+        title={`Delete ${ENTITY_LABELS[deleteTarget?.entity ?? "class"]}?`}
+        description={
+          deleteTarget
+            ? `"${deleteTarget.name}" and all of its children will be permanently deleted. This action cannot be undone.`
+            : ""
+        }
+        confirmLabel="Delete"
+        loading={deletePending}
+        onConfirm={handleDelete}
       />
     </div>
   );
@@ -167,6 +234,7 @@ function Column({
   onEdit,
   onDelete,
   emptyHint,
+  refreshing,
 }: {
   title: string;
   items: TaxonomyNode[];
@@ -175,8 +243,9 @@ function Column({
   onAdd: () => void;
   addDisabled?: boolean;
   onEdit: (node: TaxonomyNode) => void;
-  onDelete: (id: string) => Promise<void>;
+  onDelete: (node: TaxonomyNode) => void;
   emptyHint: string;
+  refreshing?: boolean;
 }) {
   return (
     <div className="flex flex-col rounded-xl border border-slate-800 bg-slate-900">
@@ -187,7 +256,10 @@ function Column({
         </Button>
       </div>
       <ul className="min-h-40 flex-1 space-y-1 overflow-y-auto p-2">
-        {items.length === 0 && (
+        {refreshing && items.length === 0 && (
+          <li className="px-2 py-6 text-center text-xs text-slate-500">Loading…</li>
+        )}
+        {!refreshing && items.length === 0 && (
           <li className="px-2 py-6 text-center text-xs text-slate-500">{emptyHint}</li>
         )}
         {items.map((n) => (
@@ -217,11 +289,7 @@ function Column({
               <Button
                 size="icon-xs"
                 variant="ghost"
-                onClick={async () => {
-                  if (confirm(`Delete "${n.name}"? Its children will also be deleted.`)) {
-                    await onDelete(n.id);
-                  }
-                }}
+                onClick={() => onDelete(n)}
                 aria-label={`Delete ${n.name}`}
               >
                 ✕
@@ -238,13 +306,6 @@ function Column({
 //  Create/Edit dialog
 // ------------------------------------------------------------
 
-const ENTITY_LABELS: Record<Entity, string> = {
-  class: "Class",
-  subject: "Subject",
-  chapter: "Chapter",
-  topic: "Topic",
-};
-
 function TaxonomyDialog({
   dialog,
   onClose,
@@ -257,6 +318,13 @@ function TaxonomyDialog({
   const [state, formAction, pending] = useActionState<ActionState | null, FormData>(
     async (_prev, fd) => {
       if (!dialog) return { success: false, error: "No dialog" };
+
+      // IMPORTANT: always append the parent id — this was missing and
+      // caused "Invalid input: expected string, received null".
+      if (dialog.mode === "create" && dialog.parentId) {
+        const field = PARENT_FIELD[dialog.entity];
+        if (field) fd.append(field, dialog.parentId);
+      }
 
       if (dialog.mode === "create") {
         switch (dialog.entity) {
@@ -287,8 +355,12 @@ function TaxonomyDialog({
   );
 
   useEffect(() => {
-    if (state?.success) {
+    if (!state) return;
+    if (state.success) {
       void onDone();
+      onClose();
+    } else {
+      showResultToast(state, { successMessage: "Saved." });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
@@ -352,12 +424,12 @@ function TaxonomyDialog({
           )}
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>
+            <Button type="button" variant="outline" onClick={onClose} disabled={pending}>
               Cancel
             </Button>
-            <Button type="submit" disabled={pending}>
-              {pending ? "Saving…" : "Save"}
-            </Button>
+            <LoadingButton type="submit" loading={pending} loadingText="Saving…">
+              Save
+            </LoadingButton>
           </DialogFooter>
         </form>
       </DialogContent>

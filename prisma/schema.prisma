@@ -73,6 +73,33 @@ enum ImportStatus {
   FAILED
 }
 
+enum PaperGenerationMode {
+  MANUAL     // Teacher selects questions manually
+  BLUEPRINT  // System auto-picks based on rules
+}
+
+// ============================================================
+//  PHASE 4 — Assignments & Submissions
+// ============================================================
+
+enum AssignmentType {
+  EXAM       // Timed online exam
+  HOMEWORK   // Take-home assignment
+}
+
+enum AssignmentStatus {
+  SCHEDULED  // Not yet active
+  ACTIVE     // Currently available
+  CLOSED     // Past end time
+}
+
+enum SubmissionStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  SUBMITTED
+  AUTO_SUBMITTED  // Timer expired
+}
+
 model QuestionImport {
   id           String       @id @default(cuid())
   fileName     String
@@ -89,6 +116,7 @@ model QuestionImport {
   user     User   @relation(fields: [userId], references: [id])
 
   @@index([schoolId, createdAt])
+  @@index([userId])
   @@map("question_imports")
 }
 
@@ -110,13 +138,14 @@ model School {
   updatedAt DateTime @updatedAt
 
   // Relations
-  users        User[]
-  classLevels  ClassLevel[]
-  subjects     Subject[]
-  papers       Paper[]
-  questionBank Question[]
-  imports      QuestionImport[]
-  subscription Subscription?
+  users         User[]
+  classLevels   ClassLevel[]
+  subjects      Subject[]
+  papers        Paper[]
+  questionBank  Question[]
+  imports       QuestionImport[]
+  subscription  Subscription?
+  assignments   PaperAssignment[]
 
   @@map("schools")
 }
@@ -141,13 +170,22 @@ model User {
   schoolId String
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
+  // Student: which class they belong to
+  classLevelId String?
+  classLevel   ClassLevel? @relation("ClassStudents", fields: [classLevelId], references: [id], onDelete: SetNull)
+
   // Relations
-  papers   Paper[]
-  imports  QuestionImport[]
-  accounts Account[]
-  sessions Session[]
+  papers            Paper[]
+  imports           QuestionImport[]
+  accounts          Account[]
+  sessions          Session[]
+  createdAssignments PaperAssignment[]   @relation("AssignmentCreator")
+  submissions       StudentSubmission[]
+  gradedAnswers     Answer[]             @relation("GradedAnswers")
 
   @@index([schoolId])
+  @@index([classLevelId])
+  @@index([schoolId, role])
   @@map("users")
 }
 
@@ -211,7 +249,9 @@ model ClassLevel {
   schoolId String
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  subjects Subject[]
+  subjects    Subject[]
+  students    User[]            @relation("ClassStudents")
+  assignments PaperAssignment[]
 
   @@unique([schoolId, name])
   @@index([schoolId])
@@ -315,6 +355,7 @@ model Question {
 
   // Many-to-many with Papers via join table
   paperSections PaperSectionQuestion[]
+  answers       Answer[]
 
   @@index([schoolId])
   @@index([subjectId])
@@ -333,13 +374,23 @@ model Paper {
   title        String
   description  String?
   totalMarks   Float       @default(0)
-  duration     Int? // in minutes
+  passingMarks Float?      // minimum passing marks
+  duration     Int?        // in minutes
   instructions String?     @db.Text
   status       PaperStatus @default(DRAFT)
   publishedAt  DateTime?
-  pdfUrl       String? // link to generated PDF
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  pdfUrl       String?     // link to generated PDF
+  answerKeyPdfUrl String?  // link to generated answer key PDF
+
+  // Generation mode
+  generationMode PaperGenerationMode @default(MANUAL)
+
+  // School header customization
+  schoolHeader String?  @db.Text  // custom school header text for PDF
+  watermarkText String?           // watermark text for the PDF
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Tenant FK
   schoolId String
@@ -351,9 +402,11 @@ model Paper {
   createdById String
   createdBy   User   @relation(fields: [createdById], references: [id])
 
-  sections PaperSection[]
+  sections     PaperSection[]
+  assignments PaperAssignment[]
 
   @@index([schoolId])
+  @@index([subjectId])
   @@index([createdById])
   @@map("papers")
 }
@@ -419,4 +472,97 @@ model Subscription {
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
   @@map("subscriptions")
+}
+
+// ============================================================
+//  PHASE 4 — Paper Assignment
+// ============================================================
+
+model PaperAssignment {
+  id          String           @id @default(cuid())
+  title       String
+  type        AssignmentType   @default(EXAM)
+  status      AssignmentStatus @default(SCHEDULED)
+  startTime   DateTime
+  endTime     DateTime
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  paperId String
+  paper   Paper  @relation(fields: [paperId], references: [id], onDelete: Cascade)
+
+  classLevelId String
+  classLevel   ClassLevel @relation(fields: [classLevelId], references: [id], onDelete: Cascade)
+
+  createdById String
+  createdBy   User @relation("AssignmentCreator", fields: [createdById], references: [id])
+
+  submissions StudentSubmission[]
+
+  @@index([schoolId])
+  @@index([paperId])
+  @@index([classLevelId])
+  @@index([createdById])
+  @@map("paper_assignments")
+}
+
+// ============================================================
+//  PHASE 4 — Student Submission
+// ============================================================
+
+model StudentSubmission {
+  id          String           @id @default(cuid())
+  startedAt   DateTime?
+  submittedAt DateTime?
+  status      SubmissionStatus @default(NOT_STARTED)
+  totalScore  Float?
+  gradedAt    DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  assignmentId String
+  assignment   PaperAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+
+  studentId String
+  student   User @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  answers Answer[]
+
+  @@unique([assignmentId, studentId])
+  @@index([assignmentId])
+  @@index([studentId])
+  @@map("student_submissions")
+}
+
+// ============================================================
+//  PHASE 4 — Answer
+// ============================================================
+
+model Answer {
+  id             String   @id @default(cuid())
+  answerText     String?  @db.Text
+  selectedOption String?
+  awardedMarks   Float?
+  graderComment  String?  @db.Text
+  gradedAt       DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  submissionId String
+  submission   StudentSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  graderId String?
+  grader   User? @relation("GradedAnswers", fields: [graderId], references: [id], onDelete: SetNull)
+
+  @@unique([submissionId, questionId])
+  @@index([submissionId])
+  @@index([questionId])
+  @@index([graderId])
+  @@map("answers")
 }

@@ -8,11 +8,14 @@
 //  Uses the importQuestionsFromDocx Server Action via useActionState.
 // ============================================================
 
-import { useActionState, useMemo, useState } from "react";
+import { useActionState, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
+import { Download, Loader2 } from "lucide-react";
 import { importQuestionsFromDocx, type ImportResult } from "./actions";
 import type { TaxonomyNode } from "../actions";
 import { DOCX_TEMPLATE_SAMPLE } from "@/lib/docx-import";
 import { Button } from "@/components/ui/button";
+import { LoadingButton } from "@/components/shared";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -52,6 +55,41 @@ export function ImportDialog({
   const [subjectId, setSubjectId] = useState("");
   const [chapterId, setChapterId] = useState("");
   const [topicId, setTopicId] = useState("");
+  const [isDownloading, setIsDownloading] = useState(false);
+
+  // Toast feedback for the import result (in addition to inline panel)
+  useEffect(() => {
+    if (!state) return;
+    if (state.error) {
+      toast.error(state.error);
+    } else if (state.success) {
+      toast.success(`Import finished — ${state.imported} imported, ${state.failed} failed.`);
+    } else {
+      toast.error("Import failed — check the errors below.");
+    }
+  }, [state]);
+
+  async function handleDownloadTemplate() {
+    setIsDownloading(true);
+    try {
+      const res = await fetch("/api/import-template");
+      if (!res.ok) throw new Error();
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "question-import-template.docx";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success("Template downloaded. Fill it in and upload it here.");
+    } catch {
+      toast.error("Could not download the template. Please try again.");
+    } finally {
+      setIsDownloading(false);
+    }
+  }
 
   const subjects = useMemo(() => tree.find((c) => c.id === classId)?.children ?? [], [tree, classId]);
   const chapters = useMemo(
@@ -73,6 +111,27 @@ export function ImportDialog({
             by <code className="mx-1 rounded bg-slate-800 px-1">---</code>.
           </DialogDescription>
         </DialogHeader>
+
+        {/* Download template */}
+        <div className="flex items-center justify-between rounded-lg border border-primary/30 bg-primary/5 p-3">
+          <div>
+            <p className="text-sm font-medium">Need the format?</p>
+            <p className="text-xs text-muted-foreground">
+              Download the ready-made template with instructions and examples for all 7 question types.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleDownloadTemplate}
+            disabled={isDownloading}
+            className="ml-3 shrink-0 gap-1.5"
+          >
+            {isDownloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+            {isDownloading ? "Downloading…" : "Download Template"}
+          </Button>
+        </div>
 
         <form action={formAction} className="space-y-4">
           {/* Taxonomy targeting */}
@@ -218,12 +277,12 @@ export function ImportDialog({
           )}
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>
               Close
             </Button>
-            <Button type="submit" disabled={pending}>
-              {pending ? "Importing…" : "Import questions"}
-            </Button>
+            <LoadingButton type="submit" loading={pending} loadingText="Importing…">
+              Import questions
+            </LoadingButton>
           </DialogFooter>
         </form>
 
