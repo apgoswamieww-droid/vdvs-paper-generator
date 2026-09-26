@@ -12,6 +12,7 @@
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed:ncert": "tsx prisma/seed-ncert-science.ts",
     "db:reset": "prisma migrate reset"
   },
   "dependencies": {
@@ -29,6 +30,7 @@
     "mammoth": "^1.12.3",
     "next": "16.3.5",
     "next-auth": "^5.0.0-beta.32",
+    "nodemailer": "^8.0.11",
     "puppeteer-core": "^25.11.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
@@ -42,6 +44,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/nodemailer": "^8.0.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

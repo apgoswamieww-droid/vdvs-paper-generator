@@ -46,6 +46,8 @@ export function toQuestionData(v: QuestionFormValue): {
   } else if (v.questionType === "TRUE_FALSE") {
     options = { kind: "trueFalse" };
   }
+  // NUMERIC keeps only its answer key — there are no printed options, so
+  // `options` stays DbNull and the student types the value.
 
   return {
     questionType: v.questionType as QuestionType,

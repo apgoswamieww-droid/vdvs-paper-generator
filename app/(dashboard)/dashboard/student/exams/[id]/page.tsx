@@ -7,11 +7,13 @@ import { getExamData, submitExam } from "../../actions";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { KaTeXRenderer } from "@/components/shared/katex-text";
+import { parseMcqOptions } from "@/lib/question-options";
 import {
   Clock,
   Send,
@@ -211,13 +213,13 @@ export default function ExamEnginePage() {
           </div>
 
           {/* Answer input based on question type */}
-          {q.questionType === "MCQ" && q.options ? (
+          {q.questionType === "MCQ" && parseMcqOptions(q.options).length > 0 ? (
             <RadioGroup
               value={answers[q.id] || ""}
               onValueChange={(v) => setAnswers({ ...answers, [q.id]: v ?? "" })}
               className="space-y-3"
             >
-              {(q.options as any[]).map((opt: any) => (
+              {parseMcqOptions(q.options).map((opt) => (
                 <label
                   key={opt.label}
                   className={`flex items-start gap-3 rounded-xl border p-4 cursor-pointer transition-colors ${
@@ -254,6 +256,19 @@ export default function ExamEnginePage() {
                 </label>
               ))}
             </RadioGroup>
+          ) : q.questionType === "NUMERIC" ? (
+            <div className="space-y-2">
+              <Input
+                inputMode="decimal"
+                value={answers[q.id] || ""}
+                onChange={(e) => setAnswers({ ...answers, [q.id]: e.target.value })}
+                placeholder="Type the numeric answer…"
+                className="max-w-xs font-[Nunito] text-sm"
+              />
+              <p className="text-xs text-muted-foreground">
+                Write the value only — for example 42, -3.5 or 1/2.
+              </p>
+            </div>
           ) : (
             <Textarea
               value={answers[q.id] || ""}

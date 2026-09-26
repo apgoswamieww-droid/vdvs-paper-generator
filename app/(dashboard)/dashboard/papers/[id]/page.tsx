@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { getPaperById, publishPaper } from "../actions";
+import { getPaperById } from "../actions";
 import { PaperDetailClient } from "./paper-detail-client";
 
 interface PageProps {

@@ -44,9 +44,10 @@ async function main() {
   const pw = await bcrypt.hash(DEMO_PASSWORD, 12);
 
   // ──────────────────────────────────────────────────
-  // 2. Users — 1 Admin, 2 Teachers, 5 Students
+  // 2. Users — 1 Super Admin, 1 Admin, 2 Teachers, 5 Students
   // ──────────────────────────────────────────────────
   const adminData = { name: "Dr. Rajesh Patel", email: "admin@demo.edu", role: UserRole.SCHOOL_ADMIN };
+  const superAdminData = { name: "Platform Owner", email: "superadmin@demo.edu", role: UserRole.SUPER_ADMIN };
   const teachersData = [
     { name: "Priya Sharma", email: "priya@demo.edu", role: UserRole.TEACHER },
     { name: "Amit Verma", email: "amit@demo.edu", role: UserRole.TEACHER },
@@ -59,7 +60,7 @@ async function main() {
     { name: "Kabir Singh", email: "kabir@demo.edu", role: UserRole.STUDENT },
   ];
 
-  const allUsers = [adminData, ...teachersData, ...studentsData];
+  const allUsers = [superAdminData, adminData, ...teachersData, ...studentsData];
 
   const users = await Promise.all(
     allUsers.map((u) =>
@@ -78,7 +79,7 @@ async function main() {
     )
   );
 
-  const [admin, teacher1, teacher2, s1, s2, s3, s4, s5] = users;
+  const [superAdmin, admin, teacher1, teacher2, s1, s2, s3, s4, s5] = users;
   console.log(`✅ ${users.length} users created (password: ${DEMO_PASSWORD})`);
 
   // ──────────────────────────────────────────────────
@@ -438,7 +439,7 @@ async function main() {
   console.log("\n🎉 Seed complete! Run: npm run dev");
   console.log("   ─────────────────────────────────");
   console.log("   Credentials (password: Demo@123):");
-  console.log("   Admin:   admin@demo.edu");
+  console.log("   Super Admin: superadmin@demo.edu");
   console.log("   Teacher: priya@demo.edu");
   console.log("   Teacher: amit@demo.edu");
   console.log("   Student: aarav@demo.edu");

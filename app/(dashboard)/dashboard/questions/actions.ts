@@ -12,6 +12,7 @@ import type {
   DifficultyLevel,
   BloomLevel,
   CaseStudyFormat,
+  QuestionStatus,
   Medium,
 } from "@prisma/client";
 import prisma from "@/lib/prisma";
@@ -38,7 +39,7 @@ function revalidateQuestions() {
 function missingRequired(data: QuestionFormValue): string | null {
   if (!data.topicId?.trim()) return "Topic is required";
   if (
-    ["SHORT_ANSWER", "LONG_ANSWER", "FILL_IN_THE_BLANK", "TRUE_FALSE"].includes(
+    ["SHORT_ANSWER", "LONG_ANSWER", "FILL_IN_THE_BLANK", "TRUE_FALSE", "NUMERIC"].includes(
       data.questionType
     ) &&
     !(data.answerKey ?? "").trim()
@@ -205,6 +206,8 @@ export type QuestionListDTO = {
   medium: Medium;
   bloomLevel: BloomLevel | null;
   marks: number;
+  /** JSON by question type — MCQ choices, match pairs, or null. */
+  options: unknown;
   tags: string[];
   previousYearTag: string | null;
   createdAt: string;
@@ -263,6 +266,7 @@ export async function listQuestions(
         medium: true,
         bloomLevel: true,
         marks: true,
+        options: true,
         tags: true,
         previousYearTag: true,
         createdAt: true,
@@ -285,6 +289,7 @@ export async function listQuestions(
       medium: r.medium,
       bloomLevel: r.bloomLevel,
       marks: r.marks,
+      options: r.options,
       tags: r.tags,
       previousYearTag: r.previousYearTag,
       createdAt: r.createdAt.toISOString(),
@@ -298,6 +303,134 @@ export async function listQuestions(
       totalPages: Math.max(1, Math.ceil(total / f.pageSize)),
     },
   };
+}
+
+// ------------------------------------------------------------
+//  Read: question details by id (paper builder selected list)
+// ------------------------------------------------------------
+
+const QUESTION_LIST_SELECT = {
+  id: true,
+  code: true,
+  questionText: true,
+  questionType: true,
+  difficulty: true,
+  medium: true,
+  bloomLevel: true,
+  marks: true,
+  options: true,
+  tags: true,
+  previousYearTag: true,
+  createdAt: true,
+  subject: { select: { id: true, name: true } },
+  chapter: { select: { id: true, name: true } },
+} as const;
+
+type QuestionListRow = {
+  id: string;
+  code: string;
+  questionText: string;
+  questionType: QuestionType;
+  difficulty: DifficultyLevel;
+  medium: Medium;
+  bloomLevel: BloomLevel | null;
+  marks: number;
+  options: unknown;
+  tags: string[];
+  previousYearTag: string | null;
+  createdAt: Date;
+  subject: { id: string; name: string } | null;
+  chapter: { id: string; name: string } | null;
+};
+
+function toQuestionListDTO(r: QuestionListRow): QuestionListDTO {
+  return {
+    id: r.id,
+    code: r.code,
+    questionText: r.questionText,
+    questionType: r.questionType,
+    difficulty: r.difficulty,
+    medium: r.medium,
+    bloomLevel: r.bloomLevel,
+    marks: r.marks,
+    options: r.options,
+    tags: r.tags,
+    previousYearTag: r.previousYearTag,
+    createdAt: r.createdAt.toISOString(),
+    subject: r.subject,
+    chapter: r.chapter,
+  };
+}
+
+/** Details for a set of question ids (all tenant-scoped). */
+export async function getQuestionsByIds(ids: string[]): Promise<QuestionListDTO[]> {
+  const { schoolId } = await requireSession();
+
+  const clean = [...new Set((ids ?? []).filter(Boolean))].slice(0, 300);
+  if (clean.length === 0) return [];
+
+  const rows = await prisma.question.findMany({
+    where: { id: { in: clean }, schoolId },
+    select: QUESTION_LIST_SELECT,
+  });
+
+  return rows.map(toQuestionListDTO);
+}
+
+/**
+ * Suggests swap-in alternatives for a question already on a paper.
+ * Matches on type + marks first, preferring the same chapter and difficulty,
+ * then widens to the whole subject so there is almost always a choice.
+ */
+export async function findReplacementQuestions(raw: unknown): Promise<QuestionListDTO[]> {
+  const { schoolId } = await requireSession();
+
+  const input = (raw ?? {}) as { questionId?: string; excludeIds?: string[] };
+  if (!input.questionId) return [];
+
+  const reference = await prisma.question.findFirst({
+    where: { id: input.questionId, schoolId },
+    select: { id: true, subjectId: true, chapterId: true, questionType: true, difficulty: true, marks: true },
+  });
+  if (!reference) return [];
+
+  const exclude = [...new Set([...(input.excludeIds ?? []), reference.id])].filter(Boolean);
+
+  const baseWhere: Prisma.QuestionWhereInput = {
+    schoolId,
+    isActive: true,
+    questionType: reference.questionType,
+    marks: reference.marks,
+    id: { notIn: exclude },
+  };
+
+  let rows = reference.chapterId
+    ? await prisma.question.findMany({
+        where: { ...baseWhere, chapterId: reference.chapterId },
+        select: QUESTION_LIST_SELECT,
+        orderBy: { createdAt: "desc" },
+        take: 12,
+      })
+    : [];
+
+  // Nothing else in that chapter — widen to the whole subject.
+  if (rows.length === 0) {
+    rows = await prisma.question.findMany({
+      where: { ...baseWhere, subjectId: reference.subjectId },
+      select: QUESTION_LIST_SELECT,
+      orderBy: { createdAt: "desc" },
+      take: 12,
+    });
+  }
+
+  // Same difficulty first — a replacement should not change the paper's balance.
+  const ordered = [...rows].sort((a, b) => {
+    const aMatch = a.difficulty === reference.difficulty ? 0 : 1;
+    const bMatch = b.difficulty === reference.difficulty ? 0 : 1;
+    return aMatch - bMatch;
+  });
+
+  return ordered.slice(0, 8).map(toQuestionListDTO);
 }
 
 // ------------------------------------------------------------
@@ -406,7 +539,7 @@ export async function listRecentQuestions(
 }
 
 // ------------------------------------------------------------
-//  Single question fetch (for edit modal)
+//  Single question fetch (edit form + view details modal)
 // ------------------------------------------------------------
 
 export type QuestionDetailDTO = QuestionListDTO & {
@@ -414,7 +547,15 @@ export type QuestionDetailDTO = QuestionListDTO & {
   explanation: string | null;
   options: unknown;
   topicId: string | null;
+  topicName: string | null;
+  className: string | null;
   caseStudyFormat: CaseStudyFormat | null;
+  status: QuestionStatus;
+  createdByAi: boolean;
+  isActive: boolean;
+  examYear: string | null;
+  imageUrl: string | null;
+  updatedAt: string;
 };
 
 export async function getQuestionById(id: string): Promise<QuestionDetailDTO | null> {
@@ -423,8 +564,15 @@ export async function getQuestionById(id: string): Promise<QuestionDetailDTO | n
   const q = await prisma.question.findFirst({
     where: { id, schoolId },
     include: {
-      subject: { select: { id: true, name: true } },
+      subject: {
+        select: {
+          id: true,
+          name: true,
+          classLevel: { select: { name: true } },
+        },
+      },
       chapter: { select: { id: true, name: true } },
+      topic: { select: { name: true } },
     },
   });
   if (!q) return null;
@@ -441,12 +589,20 @@ export async function getQuestionById(id: string): Promise<QuestionDetailDTO | n
     tags: q.tags,
     previousYearTag: q.previousYearTag,
     createdAt: q.createdAt.toISOString(),
-    subject: q.subject,
+    subject: q.subject ? { id: q.subject.id, name: q.subject.name } : null,
     chapter: q.chapter,
     answerKey: q.answerKey,
     explanation: q.explanation,
     options: q.options,
     topicId: q.topicId,
+    topicName: q.topic?.name ?? null,
+    className: q.subject?.classLevel?.name ?? null,
     caseStudyFormat: q.caseStudyFormat,
+    status: q.status,
+    createdByAi: q.createdByAi,
+    isActive: q.isActive,
+    examYear: q.examYear,
+    imageUrl: q.imageUrl,
+    updatedAt: q.updatedAt.toISOString(),
   };
 }

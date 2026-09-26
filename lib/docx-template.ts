@@ -81,7 +81,10 @@ function buildZip(entries: ZipEntry[]): Uint8Array {
       entry.data.length & 0xff, (entry.data.length >>> 8) & 0xff,
       (entry.data.length >>> 16) & 0xff, (entry.data.length >>> 24) & 0xff,
       nameBytes.length & 0xff, (nameBytes.length >>> 8) & 0xff,
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      // extra len, comment len, disk start, internal attrs (2 bytes each)
+      0, 0, 0, 0, 0, 0, 0, 0,
+      // external attrs (4 bytes)
+      0, 0, 0, 0,
       localOffset & 0xff, (localOffset >>> 8) & 0xff,
       (localOffset >>> 16) & 0xff, (localOffset >>> 24) & 0xff,
     ];

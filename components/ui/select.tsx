@@ -5,7 +5,70 @@ import { Select as SelectPrimitive } from "@base-ui/react/select"
 import { cn } from "cn"
 import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from "lucide-react"
 
-const Select = SelectPrimitive.Root
+function Select<Value, Multiple extends boolean | undefined = false>({
+  items,
+  children,
+  ...props
+}: SelectPrimitive.Root.Props<Value, Multiple>) {
+  const derivedItems = React.useMemo(
+    () => deriveSelectItemLabels(children),
+    [children],
+  )
+
+  return (
+    <SelectPrimitive.Root items={items ?? derivedItems} {...props}>
+      {children}
+    </SelectPrimitive.Root>
+  )
+}
+
+function deriveSelectItemLabels(
+  children: React.ReactNode,
+): Record<string, string> {
+  const labels: Record<string, string> = {}
+
+  function extractText(node: React.ReactNode): string {
+    let text = ""
+    React.Children.forEach(node, (child) => {
+      if (typeof child === "string" || typeof child === "number") {
+        text += String(child)
+      } else if (React.isValidElement(child)) {
+        text += extractText(
+          (child.props as { children?: React.ReactNode }).children,
+        )
+      }
+    })
+    return text
+  }
+
+  function walk(node: React.ReactNode): void {
+    React.Children.forEach(node, (child) => {
+      if (!React.isValidElement(child)) {
+        return
+      }
+      const props = child.props as {
+        value?: unknown
+        children?: React.ReactNode
+      }
+      if (
+        (child.type === SelectItem ||
+          child.type === SelectPrimitive.Item) &&
+        typeof props.value === "string" &&
+        props.value !== ""
+      ) {
+        const label = extractText(props.children).trim()
+        if (label) {
+          labels[props.value] = label
+        }
+      } else {
+        walk(props.children)
+      }
+    })
+  }
+
+  walk(children)
+  return labels
+}
 
 function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   return (

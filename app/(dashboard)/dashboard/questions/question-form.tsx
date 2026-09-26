@@ -43,7 +43,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Hash } from "lucide-react";
+import { detectNumericConversion } from "@/lib/question-options";
 
 const TYPE_LABELS: Record<string, string> = {
   MCQ: "MCQ",
@@ -53,6 +54,7 @@ const TYPE_LABELS: Record<string, string> = {
   FILL_IN_THE_BLANK: "Fill in the Blank",
   MATCH_THE_FOLLOWING: "Match the Following",
   CASE_STUDY: "Case Study",
+  NUMERIC: "Numeric",
 };
 
 const MEDIUM_LABELS: Record<string, string> = {
@@ -157,6 +159,24 @@ export function QuestionForm({
   const chapterId = watch("chapterId");
   const topicId = watch("topicId");
   const questionType = watch("questionType");
+
+  // An MCQ whose correct option is a plain number can become a numeric-answer
+  // question — the student types the value instead of picking it.
+  const optionsValue = watch("options");
+  const numericConversion = useMemo(
+    () =>
+      questionType === "MCQ"
+        ? detectNumericConversion({ kind: "mcq", choices: optionsValue ?? [] })
+        : null,
+    [questionType, optionsValue]
+  );
+
+  function convertToNumericQuestion() {
+    if (!numericConversion) return;
+    setValue("questionType", "NUMERIC", { shouldValidate: true });
+    setValue("answerKey", numericConversion.text, { shouldValidate: true });
+    toast.success(`Now a numeric question — answer set to ${numericConversion.text}.`);
+  }
   const questionText = watch("questionText");
   const explanation = watch("explanation");
   const answerKey = watch("answerKey");
@@ -516,6 +536,27 @@ export function QuestionForm({
         </div>
       </div>
 
+      {/* A numeric correct option means this MCQ can be answered by typing */}
+      {numericConversion && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-secondary/30 bg-secondary/5 p-3">
+          <p className="text-xs text-muted-foreground">
+            Correct option <span className="font-semibold text-foreground">({numericConversion.label})</span>{" "}
+            is the number <span className="font-semibold text-foreground">{numericConversion.text}</span> — students
+            could type it instead of choosing.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={convertToNumericQuestion}
+          >
+            <Hash className="h-3.5 w-3.5" />
+            Convert to numeric
+          </Button>
+        </div>
+      )}
+
       {questionType === "CASE_STUDY" && (
         <div className="space-y-1.5">
           <Label>Case-study format</Label>
@@ -682,8 +723,29 @@ export function QuestionForm({
       {/* Answer key */}
       {questionType !== "MCQ" && (
         <div className="space-y-1.5">
-          <Label>Answer key {questionType === "TRUE_FALSE" ? "" : "(optional)"}</Label>
-          {questionType === "TRUE_FALSE" ? (
+          <Label>
+            {questionType === "NUMERIC"
+              ? "Numeric answer"
+              : `Answer key ${questionType === "TRUE_FALSE" ? "" : "(optional)"}`}
+          </Label>
+          {questionType === "NUMERIC" ? (
+            <>
+              <Input
+                inputMode="decimal"
+                value={answerKey ?? ""}
+                onChange={(e) => setValue("answerKey", e.target.value, { shouldValidate: true })}
+                placeholder="e.g. 42, -3.5 or 1/2"
+                className="bg-slate-950"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Students type this value instead of picking an option. Fractions like 1/2 are
+                accepted.
+              </p>
+              {errors.answerKey && (
+                <p className="text-xs text-red-400">{errors.answerKey.message}</p>
+              )}
+            </>
+          ) : questionType === "TRUE_FALSE" ? (
             <Select
               items={[
                 { value: "True", label: "True" },

@@ -3,8 +3,8 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import {
   LayoutDashboard,
@@ -15,7 +15,16 @@ import {
   PanelLeftClose,
   PanelLeft,
   GraduationCap,
+  Building2,
+  Users,
+  ClipboardCheck,
+  ClipboardList,
+  FileCheck,
+  PenLine,
+  Award,
+  Sparkles,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
 const NAV_ITEMS = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
@@ -24,8 +33,55 @@ const NAV_ITEMS = [
   { label: "Curriculum", href: "/dashboard/taxonomy", icon: FolderTree },
 ] as const;
 
+const TEACHER_ITEMS = [
+  { label: "Dashboard", href: "/dashboard/teacher", icon: LayoutDashboard },
+  { label: "Papers", href: "/dashboard/papers", icon: FileText },
+  { label: "Question Bank", href: "/dashboard/questions", icon: HelpCircle },
+  { label: "Curriculum", href: "/dashboard/taxonomy", icon: FolderTree },
+  { label: "Assignments", href: "/dashboard/teacher/assignments", icon: ClipboardList },
+  { label: "Grading", href: "/dashboard/teacher/grading", icon: PenLine },
+  { label: "Submissions", href: "/dashboard/teacher/submissions", icon: FileCheck },
+  { label: "Review Questions", href: "/dashboard/teacher/questions/review", icon: ClipboardCheck },
+] as const;
+
+const STUDENT_ITEMS = [
+  { label: "Dashboard", href: "/dashboard/student", icon: LayoutDashboard },
+  { label: "My Exams", href: "/dashboard/student/exams", icon: ClipboardList },
+  { label: "My Results", href: "/dashboard/student/results", icon: Award },
+] as const;
+
+const SCHOOL_ADMIN_ITEMS = [
+  { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+  { label: "Users & Staff", href: "/dashboard/admin/users", icon: Users },
+  { label: "Classes & Sections", href: "/dashboard/admin/classes", icon: GraduationCap },
+  { label: "AI Generator", href: "/dashboard/admin/ai-generator", icon: Sparkles },
+  { label: "Papers", href: "/dashboard/papers", icon: FileText },
+  { label: "Question Bank", href: "/dashboard/questions", icon: HelpCircle },
+  { label: "Curriculum", href: "/dashboard/taxonomy", icon: FolderTree },
+] as const;
+
+const SUPER_ADMIN_ITEMS = [
+  { label: "Platform", href: "/dashboard/super-admin", icon: Building2 },
+] as const;
+
+// Personal account settings — reachable by every signed-in role (see middleware.ts).
 const BOTTOM_NAV_ITEMS = [
   { label: "Settings", href: "/dashboard/settings", icon: Settings },
+] as const;
+
+// Role home pages must match exactly, otherwise the generic `startsWith` check in
+// isActive() would also light up "Dashboard" while a nested page like
+// /dashboard/teacher/grading is open.
+const EXACT_MATCH_HREFS = new Set([
+  "/dashboard",
+  "/dashboard/settings",
+  "/dashboard/super-admin",
+  "/dashboard/teacher",
+  "/dashboard/student",
+]);
+
+const SCHOOL_ADMIN_BOTTOM_ITEMS = [
+  { label: "School Settings", href: "/dashboard/admin/settings", icon: Settings },
 ] as const;
 
 function SidebarContent({
@@ -36,9 +92,24 @@ function SidebarContent({
   onNavClick?: () => void;
 }) {
   const pathname = usePathname();
+  const { data: session } = useSession();
+  const role = (session?.user as { role?: string } | undefined)?.role;
+  let navItems: ReadonlyArray<{ label: string; href: string; icon: LucideIcon }> = NAV_ITEMS;
+  let bottomNavItems: ReadonlyArray<{ label: string; href: string; icon: LucideIcon }> =
+    BOTTOM_NAV_ITEMS;
+  if (role === "SUPER_ADMIN") {
+    navItems = SUPER_ADMIN_ITEMS;
+  } else if (role === "SCHOOL_ADMIN") {
+    navItems = SCHOOL_ADMIN_ITEMS;
+    bottomNavItems = SCHOOL_ADMIN_BOTTOM_ITEMS;
+  } else if (role === "TEACHER") {
+    navItems = TEACHER_ITEMS;
+  } else if (role === "STUDENT") {
+    navItems = STUDENT_ITEMS;
+  }
 
   function isActive(href: string) {
-    if (href === "/dashboard") return pathname === "/dashboard";
+    if (EXACT_MATCH_HREFS.has(href)) return pathname === href;
     return pathname.startsWith(href);
   }
 
@@ -63,7 +134,7 @@ function SidebarContent({
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 px-3 py-4">
-        {NAV_ITEMS.map((item) => {
+        {navItems.map((item) => {
           const active = isActive(item.href);
           return (
             <Link
@@ -94,8 +165,9 @@ function SidebarContent({
       </nav>
 
       {/* Bottom nav */}
-      <div className="border-t border-sidebar-border px-3 py-4 space-y-1">
-        {BOTTOM_NAV_ITEMS.map((item) => {
+      {bottomNavItems.length > 0 && (
+        <div className="border-t border-sidebar-border px-3 py-4 space-y-1">
+          {bottomNavItems.map((item) => {
           const active = isActive(item.href);
           return (
             <Link
@@ -124,6 +196,7 @@ function SidebarContent({
           );
         })}
       </div>
+      )}
     </div>
   );
 }

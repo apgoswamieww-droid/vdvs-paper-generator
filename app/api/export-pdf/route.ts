@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { requireSession } from "@/lib/session";
+import { buildHeaderContext, headerConfigToHTML, normalizeHeaderConfig } from "@/lib/paper-header";
+import {
+  isLandscape,
+  normalizePageConfig,
+  pageSetupCss,
+  pdfFormat,
+  type PageConfig,
+} from "@/lib/paper-page";
+import { parseMcqOptions } from "@/lib/question-options";
 import katex from "katex";
 
 // ============================================================
@@ -17,7 +26,7 @@ export async function POST(request: NextRequest) {
     // ── Auth: require session + tenant scoping ──
     const session = await requireSession();
     const body = await request.json();
-    const { paperId, includeAnswerKey = false } = body;
+    const { paperId, includeAnswerKey = false, pageOverrides } = body;
 
     if (!paperId) {
       return NextResponse.json({ error: "paperId is required" }, { status: 400 });
@@ -26,9 +35,34 @@ export async function POST(request: NextRequest) {
     // Fetch the paper — scoped to the authenticated user's school
     const paper = await prisma.paper.findFirst({
       where: { id: paperId, schoolId: session.schoolId },
-      include: {
-        subject: { select: { name: true } },
-        school: { select: { name: true, logoUrl: true } },
+      select: {
+        id: true,
+        title: true,
+        totalMarks: true,
+        passingMarks: true,
+        duration: true,
+        instructions: true,
+        schoolHeader: true,
+        watermarkText: true,
+        headerConfig: true,
+        pageConfig: true,
+        createdAt: true,
+        subject: {
+          select: {
+            name: true,
+            classLevel: { select: { name: true } },
+          },
+        },
+        school: {
+          select: {
+            name: true,
+            logoUrl: true,
+            address: true,
+            phone: true,
+            board: true,
+            academicYear: true,
+          },
+        },
         sections: {
           orderBy: { order: "asc" },
           include: {
@@ -58,11 +92,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Paper not found" }, { status: 404 });
     }
 
+    // Page setup: the paper's saved config, optionally overridden for this export.
+    const pageConfig = normalizePageConfig(pageOverrides ?? paper.pageConfig);
+
     // Build the HTML
-    const html = buildPaperHTML(paper, includeAnswerKey);
+    const html = buildPaperHTML(paper, includeAnswerKey, pageConfig);
 
     // Generate PDF with Puppeteer
-    const pdfBuffer = await generatePDF(html);
+    const pdfBuffer = await generatePDF(html, pageConfig);
 
     return new Response(new Uint8Array(pdfBuffer), {
       status: 200,
@@ -93,8 +130,18 @@ function buildPaperHTML(
     instructions: string | null;
     schoolHeader: string | null;
     watermarkText: string | null;
-    subject: { name: string } | null;
-    school: { name: string; logoUrl: string | null } | null;
+    headerConfig: unknown;
+    pageConfig: unknown;
+    createdAt: Date;
+    subject: { name: string; classLevel: { name: string } | null } | null;
+    school: {
+      name: string;
+      logoUrl: string | null;
+      address: string | null;
+      phone: string | null;
+      board: string | null;
+      academicYear: string | null;
+    } | null;
     sections: {
       title: string;
       instructions: string | null;
@@ -113,12 +160,16 @@ function buildPaperHTML(
       }[];
     }[];
   },
-  includeAnswerKey: boolean
+  includeAnswerKey: boolean,
+  pageConfig: PageConfig
 ): string {
   const mathCSS = getKaTeXCSS();
   const mathFonts = getMathFonts();
 
   let sectionsHTML = "";
+
+  // Answers collected for a trailing answer-key page.
+  const answerKeyBlocks: string[] = [];
 
   for (const section of paper.sections) {
     let questionsHTML = "";
@@ -129,7 +180,8 @@ function buildPaperHTML(
       const q = sq.question;
       const qText = renderKaTeX(q.questionText);
       const isMCQ = q.questionType === "MCQ";
-      const options = isMCQ && Array.isArray(q.options) ? (q.options as { label: string; text: string }[]) : [];
+      const isNumeric = q.questionType === "NUMERIC";
+      const options = isMCQ ? parseMcqOptions(q.options) : [];
 
       let optionsHTML = "";
       if (isMCQ && options.length > 0) {
@@ -146,7 +198,7 @@ function buildPaperHTML(
       }
 
       let answerHTML = "";
-      if (includeAnswerKey && q.answerKey) {
+      if (includeAnswerKey && !pageConfig.answerKeyOnNewPage && q.answerKey) {
         answerHTML = `
           <div class="answer-key">
             <strong>Answer:</strong> ${renderKaTeX(q.answerKey)}
@@ -155,7 +207,7 @@ function buildPaperHTML(
       }
 
       let explanationHTML = "";
-      if (includeAnswerKey && q.explanation) {
+      if (includeAnswerKey && !pageConfig.answerKeyOnNewPage && q.explanation) {
         explanationHTML = `
           <div class="explanation">
             <strong>Explanation:</strong> ${renderKaTeX(q.explanation)}
@@ -171,10 +223,39 @@ function buildPaperHTML(
             <span class="question-marks">[${marks}m]</span>
           </div>
           ${optionsHTML}
+          ${isNumeric ? `<div class="numeric-answer">Answer: ____________________</div>` : ""}
           ${answerHTML}
           ${explanationHTML}
         </div>
       `;
+    }
+
+    // Separate answer-key page — collected here, appended after all sections.
+    if (includeAnswerKey && pageConfig.answerKeyOnNewPage) {
+      const sectionAnswers = section.questions
+        .map((sq, i) => {
+          const q = sq.question;
+          if (!q.answerKey && !q.explanation) return "";
+          return `
+            <div class="ak-item">
+              <span class="question-number">${i + 1}.</span>
+              <div class="ak-body">
+                ${q.answerKey ? `<div class="answer-key"><strong>Answer:</strong> ${renderKaTeX(q.answerKey)}</div>` : ""}
+                ${q.explanation ? `<div class="explanation"><strong>Explanation:</strong> ${renderKaTeX(q.explanation)}</div>` : ""}
+              </div>
+            </div>
+          `;
+        })
+        .join("");
+
+      if (sectionAnswers) {
+        answerKeyBlocks.push(`
+          <div class="section">
+            <div class="section-header"><h3>${escapeHTML(section.title)}</h3></div>
+            ${sectionAnswers}
+          </div>
+        `);
+      }
     }
 
     sectionsHTML += `
@@ -193,9 +274,37 @@ function buildPaperHTML(
 
   const title = escapeHTML(paper.title);
   const subject = paper.subject ? escapeHTML(paper.subject.name) : "";
-  const header = paper.schoolHeader ? escapeHTML(paper.schoolHeader) : escapeHTML(paper.school?.name || "");
   const instructions = paper.instructions ? escapeHTML(paper.instructions) : "";
   const watermark = paper.watermarkText || "";
+
+  // Header: prefer structured headerConfig, fall back to legacy schoolHeader text
+  let header = "";
+  const headerConfig = normalizeHeaderConfig(paper.headerConfig);
+  if (headerConfig.rows.length > 0) {
+    const cfg = headerConfig;
+    if (cfg.rows.length > 0) {
+      const ctx = buildHeaderContext({
+        paperTitle: paper.title,
+        date: paper.createdAt,
+        className: paper.subject?.classLevel?.name ?? "",
+        subjectName: paper.subject?.name ?? "",
+        totalMarks: paper.totalMarks,
+        duration: paper.duration,
+        school: {
+          name: paper.school?.name ?? "",
+          logoUrl: paper.school?.logoUrl ?? null,
+          address: paper.school?.address ?? null,
+          phone: paper.school?.phone ?? null,
+          board: paper.school?.board ?? null,
+          academicYear: paper.school?.academicYear ?? null,
+        },
+      });
+      header = headerConfigToHTML(cfg, ctx, paper.school?.logoUrl ?? null);
+    }
+  }
+  if (!header) {
+    header = paper.schoolHeader ? escapeHTML(paper.schoolHeader) : escapeHTML(paper.school?.name || "");
+  }
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -215,18 +324,13 @@ function buildPaperHTML(
 
     body {
       font-family: 'Nunito', 'Noto Sans', 'Noto Serif Gujarati', Arial, sans-serif;
-      font-size: 11pt;
-      line-height: 1.5;
       color: #1a1a1a;
       background: white;
     }
 
-    .page {
-      padding: 40px 50px;
-      max-width: 210mm;
-      margin: 0 auto;
-      position: relative;
-    }
+    /* Page geometry comes from the paper's PageConfig (lib/paper-page.ts).
+       Page margins themselves are applied by Puppeteer's margin option. */
+    ${pageSetupCss(pageConfig)}
 
     /* Watermark */
     ${watermark ? `
@@ -419,6 +523,31 @@ function buildPaperHTML(
       padding: 3px 8px;
     }
 
+    /* Numeric answer rule */
+    .numeric-answer {
+      margin-left: 28px;
+      margin-top: 6px;
+      font-size: 10.5pt;
+      color: #333;
+    }
+
+    /* Answer key on its own page */
+    .page-break {
+      page-break-before: always;
+    }
+
+    .ak-item {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      margin-bottom: 8px;
+      page-break-inside: avoid;
+    }
+
+    .ak-body {
+      flex: 1;
+    }
+
     /* KaTeX rendering */
     .katex-display {
       margin: 8px 0;
@@ -441,9 +570,6 @@ function buildPaperHTML(
     }
 
     @media print {
-      .page {
-        padding: 20px 30px;
-      }
       body {
         -webkit-print-color-adjust: exact;
       }
@@ -475,6 +601,9 @@ function buildPaperHTML(
 
     <!-- Sections & Questions -->
     ${sectionsHTML}
+
+    <!-- Answer key (own page) -->
+    ${answerKeyBlocks.length > 0 ? `<div class="page-break"></div><div class="paper-title"><h1>Answer Key</h1></div>${answerKeyBlocks.join("")}` : ""}
 
     <!-- Footer -->
     <div class="page-footer">
@@ -513,7 +642,7 @@ function renderKaTeX(text: string): string {
 //  PDF Generation with Puppeteer
 // ============================================================
 
-async function generatePDF(html: string): Promise<Buffer> {
+async function generatePDF(html: string, pageConfig: PageConfig): Promise<Buffer> {
   // Dynamic import to avoid bundling issues
   const puppeteer = await import("puppeteer-core");
 
@@ -575,18 +704,19 @@ async function generatePDF(html: string): Promise<Buffer> {
     });
 
     const pdfData = await page.pdf({
-      format: "A4",
+      format: pdfFormat(pageConfig.size),
+      landscape: isLandscape(pageConfig),
       printBackground: true,
       margin: {
-        top: "15mm",
-        right: "12mm",
-        bottom: "15mm",
-        left: "12mm",
+        top: `${pageConfig.margins.top}mm`,
+        right: `${pageConfig.margins.right}mm`,
+        bottom: `${pageConfig.margins.bottom}mm`,
+        left: `${pageConfig.margins.left}mm`,
       },
-      displayHeaderFooter: true,
+      displayHeaderFooter: pageConfig.showPageNumbers,
       headerTemplate: `<div></div>`,
       footerTemplate: `
-        <div style="width: 100%; font-size: 8pt; color: #999; padding: 0 50px; display: flex; justify-content: space-between;">
+        <div style="width: 100%; font-size: 8pt; color: #999; padding: 0 ${pageConfig.margins.left}mm; display: flex; justify-content: space-between;">
           <span></span>
           <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span>
         </div>

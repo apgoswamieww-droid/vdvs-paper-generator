@@ -18,6 +18,7 @@ const TYPE_LABELS: Record<string, string> = {
   FILL_IN_THE_BLANK: "Fill in",
   MATCH_THE_FOLLOWING: "Match",
   CASE_STUDY: "Case Study",
+  NUMERIC: "Numeric",
 };
 
 export function RecentQuestions({

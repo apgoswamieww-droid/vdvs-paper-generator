@@ -36,7 +36,15 @@ enum PaperStatus {
   DRAFT
   PUBLISHED
   ARCHIVED
-}enum QuestionType {
+}
+
+enum QuestionStatus {
+  PENDING  // AI-generated, awaiting teacher review
+  APPROVED // Ready for use in papers
+  REJECTED // Not fit for the bank
+}
+
+enum QuestionType {
   MCQ             // Multiple Choice
   SHORT_ANSWER
   LONG_ANSWER
@@ -44,6 +52,7 @@ enum PaperStatus {
   FILL_IN_THE_BLANK
   MATCH_THE_FOLLOWING
   CASE_STUDY      // Passage-based analytical question
+  NUMERIC         // Student types a numeric value instead of picking an option
 }
 
 enum DifficultyLevel {
@@ -69,6 +78,11 @@ enum CaseStudyFormat {
 enum Medium {
   ENGLISH
   GUJARATI
+}
+
+enum SchoolBoard {
+  GSEB
+  CBSE
 }
 
 enum ImportStatus {
@@ -142,6 +156,15 @@ model School {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // ── Advanced configuration (School Settings panel) ──
+  board                SchoolBoard @default(GSEB) // GSEB / CBSE
+  academicYear         String?     // e.g. "2026-27"
+  watermarkText        String?     // default watermark for the PDF engine
+  defaultInstructions  String?     @db.Text // default exam instructions for new papers
+  allowSelfRegistration Boolean  @default(false) // allow open student/teacher sign-up
+  teacherCanEdit       Boolean     @default(true) // teachers may create/edit papers
+  mediums              Medium[]    @default([ENGLISH, GUJARATI]) // enabled mediums for papers
+
   // Relations
   users         User[]
   classLevels   ClassLevel[]
@@ -187,6 +210,10 @@ model User {
   createdAssignments PaperAssignment[]   @relation("AssignmentCreator")
   submissions       StudentSubmission[]
   gradedAnswers     Answer[]             @relation("GradedAnswers")
+
+  // AI question review workflow
+  assignedQuestions Question[] @relation("AssignedTeacherQuestions")
+  reviewedQuestions Question[] @relation("ReviewedQuestions")
 
   @@index([schoolId])
   @@index([classLevelId])
@@ -343,6 +370,19 @@ model Question {
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
 
+  // ── AI generation & teacher-approval workflow ──
+  // Manual questions are APPROVED by default; AI-generated questions start
+  // PENDING and only enter the active bank once a teacher approves them.
+  status      QuestionStatus @default(APPROVED)
+  createdByAi Boolean        @default(false)
+  examYear    String?        // e.g. "2024" — optional previous-year tagging
+  // Admin may route a generated question to a specific teacher for review.
+  assignedTeacherId String?
+  assignedTeacher   User?    @relation("AssignedTeacherQuestions", fields: [assignedTeacherId], references: [id], onDelete: SetNull)
+  // Who finally approved it for the bank.
+  reviewedById String?
+  reviewedBy   User?         @relation("ReviewedQuestions", fields: [reviewedById], references: [id], onDelete: SetNull)
+
   // Tenant FK
   schoolId String
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
@@ -371,6 +411,8 @@ model Question {
   @@index([chapterId])
   @@index([topicId])
   @@index([previousYearTag])
+  @@index([assignedTeacherId])
+  @@index([status, createdByAi])
   @@map("questions")
 }
 
@@ -395,7 +437,9 @@ model Paper {
   generationMode PaperGenerationMode @default(MANUAL)
 
   // School header customization
-  schoolHeader String?  @db.Text  // custom school header text for PDF
+  schoolHeader String?  @db.Text  // legacy plain-text school header for PDF
+  headerConfig Json?              // structured header rows (text/logo/line)
+  pageConfig   Json?              // page size / orientation / margins / density
   watermarkText String?           // watermark text for the PDF
 
   createdAt DateTime @default(now())

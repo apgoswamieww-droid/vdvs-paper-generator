@@ -37,8 +37,9 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog, showResultToast, showErrorToast } from "@/components/shared";
-import { Plus, Upload, Search, X, Pencil, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
+import { Plus, Upload, Search, X, Pencil, Trash2, Eye, ChevronLeft, ChevronRight } from "lucide-react";
 import { ImportDialog } from "./import/import-dialog";
+import { QuestionDetailDialog } from "./question-detail-dialog";
 
 type Filters = Partial<QuestionFilterInput>;
 
@@ -56,6 +57,7 @@ const TYPE_LABELS: Record<string, string> = {
   FILL_IN_THE_BLANK: "Fill blank",
   MATCH_THE_FOLLOWING: "Match",
   CASE_STUDY: "Case study",
+  NUMERIC: "Numeric",
 };
 
 const BLOOM_LEVELS = [
@@ -90,6 +92,10 @@ export function QuestionsClient({
 
   // Dialog state
   const [importOpen, setImportOpen] = useState(false);
+
+  // Question details modal state
+  const [viewId, setViewId] = useState<string | null>(null);
+  const [viewOpen, setViewOpen] = useState(false);
 
   // Delete confirmation state
   const [deleteTarget, setDeleteTarget] = useState<QuestionListDTO | null>(null);
@@ -356,7 +362,14 @@ export function QuestionsClient({
               )}
               {!isPending &&
                 items.map((q) => (
-                  <TableRow key={q.id}>
+                  <TableRow
+                    key={q.id}
+                    className="cursor-pointer"
+                    onClick={() => {
+                      setViewId(q.id);
+                      setViewOpen(true);
+                    }}
+                  >
                     <TableCell className="font-mono text-[11px] tabular-nums text-muted-foreground">
                       #{q.code}
                     </TableCell>
@@ -416,8 +429,23 @@ export function QuestionsClient({
                         <Button
                           size="icon-xs"
                           variant="ghost"
+                          aria-label="View question details"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setViewId(q.id);
+                            setViewOpen(true);
+                          }}
+                        >
+                          <Eye className="h-3 w-3" />
+                        </Button>
+                        <Button
+                          size="icon-xs"
+                          variant="ghost"
                           aria-label="Edit question"
-                          onClick={() => router.push(`/dashboard/questions/${q.id}`)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            router.push(`/dashboard/questions/${q.id}`);
+                          }}
                         >
                           <Pencil className="h-3 w-3" />
                         </Button>
@@ -425,7 +453,10 @@ export function QuestionsClient({
                           size="icon-xs"
                           variant="ghost"
                           aria-label="Delete question"
-                          onClick={() => setDeleteTarget(q)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleteTarget(q);
+                          }}
                           className="text-muted-foreground hover:text-destructive"
                         >
                           <Trash2 className="h-3 w-3" />
@@ -488,6 +519,13 @@ export function QuestionsClient({
       </div>
 
       {/* ------- Dialogs ------- */}
+      <QuestionDetailDialog
+        key={viewOpen ? (viewId ?? "closed") : "closed"}
+        open={viewOpen}
+        onOpenChange={setViewOpen}
+        questionId={viewOpen ? viewId : null}
+      />
+
       <ImportDialog
         open={importOpen}
         onOpenChange={setImportOpen}

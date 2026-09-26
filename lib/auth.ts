@@ -48,18 +48,21 @@ export const {
     }),
   ],
   callbacks: {
-    async jwt({ token, user }) {
-      if (user) {
-        token.role = (user as any).role;
-        token.schoolId = (user as any).schoolId;
+    async jwt({ token, user, trigger, session }) {
+      const extra = user as { role?: string | null; schoolId?: string | null } | null;
+      if (extra?.role) token.role = extra.role;
+      if (extra?.schoolId) token.schoolId = extra.schoolId;
+      if (trigger === "update" && session?.name) {
+        token.name = session.name;
       }
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
-        (session.user as any).id = token.sub;
-        (session.user as any).role = token.role;
-        (session.user as any).schoolId = token.schoolId;
+        const su = session.user as { id?: string | null; role?: string | null; schoolId?: string | null };
+        su.id = token.sub;
+        su.role = typeof token.role === "string" ? token.role : null;
+        su.schoolId = typeof token.schoolId === "string" ? token.schoolId : null;
       }
       return session;
     },

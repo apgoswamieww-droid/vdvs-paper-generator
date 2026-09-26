@@ -5,7 +5,7 @@
 //  Supports Manual mode (question picker) and Blueprint mode (auto-gen)
 // ============================================================
 
-import { useState, useTransition, useCallback } from "react";
+import { useState, useTransition, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,17 +18,36 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { KaTeXRenderer } from "@/components/shared/katex-text";
-import { listQuestions, getTaxonomyTree, type TaxonomyNode, type QuestionListDTO } from "../../questions/actions";
+import { Repeat2, Trash2 } from "lucide-react";
+import { HeaderEditor } from "@/components/paper/header-editor";
+import { PageSettingsEditor } from "@/components/paper/page-settings-editor";
+import { PaperPreview } from "@/components/paper/paper-preview";
+import { ReplaceQuestionDialog } from "@/components/paper/replace-question-dialog";
+import {
+  getQuestionsByIds,
+  listQuestions,
+  type TaxonomyNode,
+  type QuestionListDTO,
+} from "../../questions/actions";
 import { createManualPaper, createBlueprintPaper } from "../actions";
 import type { ActionState } from "@/lib/validations";
 import { MEDIUMS } from "@/lib/validations";
+import { EMPTY_HEADER, buildHeaderContext, type HeaderConfig, type SchoolHeaderProfile } from "@/lib/paper-header";
+import { DEFAULT_PAGE_CONFIG, type PageConfig } from "@/lib/paper-page";
 
 // ============================================================
 //  Types
 // ============================================================
 
+type PaperDefaults = SchoolHeaderProfile & {
+  defaultInstructions: string;
+  watermarkText: string;
+  defaultHeader: HeaderConfig;
+};
+
 interface PaperBuilderProps {
   taxonomy: TaxonomyNode[];
+  paperDefaults: PaperDefaults;
 }
 
 interface SectionDraft {
@@ -84,7 +103,7 @@ const MEDIUM_LABELS: Record<string, string> = {
 //  Main Component
 // ============================================================
 
-export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
+export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProps) {
   const router = useRouter();
   const [mode, setMode] = useState<"manual" | "blueprint">("manual");
   const [isPending, startTransition] = useTransition();
@@ -97,9 +116,10 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
   const [duration, setDuration] = useState("");
   const [totalMarks, setTotalMarks] = useState("");
   const [passingMarks, setPassingMarks] = useState("");
-  const [instructions, setInstructions] = useState("");
-  const [schoolHeader, setSchoolHeader] = useState("");
-  const [watermarkText, setWatermarkText] = useState("");
+  const [instructions, setInstructions] = useState(paperDefaults.defaultInstructions);
+  const [headerConfig, setHeaderConfig] = useState<HeaderConfig>(paperDefaults.defaultHeader ?? EMPTY_HEADER);
+  const [watermarkText, setWatermarkText] = useState(paperDefaults.watermarkText);
+  const [pageConfig, setPageConfig] = useState<PageConfig>(DEFAULT_PAGE_CONFIG);
 
   // ---- Manual Mode State ----
   const [sections, setSections] = useState<SectionDraft[]>([
@@ -119,6 +139,11 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
   const [questionPage, setQuestionPage] = useState(1);
   const [isSearching, startSearchTransition] = useTransition();
 
+  // Full details for every question already picked, so the selected list and the
+  // preview can render them without re-searching.
+  const [questionDetails, setQuestionDetails] = useState<Record<string, QuestionListDTO>>({});
+  const [replaceTarget, setReplaceTarget] = useState<{ sectionId: string; questionId: string } | null>(null);
+
   // ---- Blueprint Mode State ----
   const [bpClassLevelId, setBpClassLevelId] = useState("");
   const [bpSubjectId, setBpSubjectId] = useState("");
@@ -137,10 +162,32 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
 
   // ---- Derived Data ----
   const allSelectedIds = new Set(sections.flatMap((s) => s.questionIds));
-  const computedTotalMarks = sections.reduce((sum, s) => {
-    // We'll use the totalMarks input, but also show a computed value
-    return sum;
-  }, 0);
+  const activeSection = sections.find((s) => s.id === activeSectionId) ?? sections[0];
+  const activeSectionQuestions = (activeSection?.questionIds ?? [])
+    .map((id) => questionDetails[id])
+    .filter((q): q is QuestionListDTO => Boolean(q));
+
+  // Header token context (live for the preview)
+  const headerContext = useMemo(() => {
+    const classNode = taxonomy.find((cl) => cl.id === bpClassLevelId);
+    const subjectNode = classNode?.children.find((s) => s.id === bpSubjectId);
+    return buildHeaderContext({
+      paperTitle: title,
+      date: new Date(),
+      className: classNode?.name ?? "",
+      subjectName: subjectNode?.name ?? "",
+      totalMarks: Number(totalMarks) || 0,
+      duration: duration ? Number(duration) : null,
+      school: {
+        name: paperDefaults.name ?? "",
+        logoUrl: paperDefaults.logoUrl,
+        address: paperDefaults.address,
+        phone: paperDefaults.phone,
+        board: paperDefaults.board,
+        academicYear: paperDefaults.academicYear,
+      },
+    });
+  }, [title, taxonomy, bpClassLevelId, bpSubjectId, totalMarks, duration, paperDefaults]);
 
   // Taxonomy helpers
   const selectedClass = taxonomy.find((cl) =>
@@ -166,6 +213,7 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
         setQuestionResults(result.items);
         setQuestionTotal(result.meta.total);
         setQuestionPage(page);
+        mergeQuestionDetails(result.items);
       });
     },
     [qSearch, qMedium, qSubjectId, qChapterId, qType, qDifficulty]
@@ -198,6 +246,26 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
     );
   }
 
+  function mergeQuestionDetails(rows: QuestionListDTO[]) {
+    if (rows.length === 0) return;
+    setQuestionDetails((prev) => {
+      const next = { ...prev };
+      for (const r of rows) next[r.id] = r;
+      return next;
+    });
+  }
+
+  /** Loads details for ids we don't have yet (used when picking + replacing). */
+  function ensureQuestionDetails(ids: string[]): void {
+    const missing = [...new Set(ids)].filter((id) => id && !questionDetails[id]);
+    if (missing.length === 0) return;
+    void getQuestionsByIds(missing)
+      .then(mergeQuestionDetails)
+      .catch(() => {
+        // Details are cosmetic — the paper still saves with plain ids.
+      });
+  }
+
   function toggleQuestionInActiveSection(questionId: string) {
     setSections((prev) =>
       prev.map((s) => {
@@ -210,6 +278,34 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
             : [...s.questionIds, questionId],
         };
       })
+    );
+    ensureQuestionDetails([questionId]);
+  }
+
+  function removeQuestionFromSection(sectionId: string, questionId: string) {
+    setSections((prev) =>
+      prev.map((s) =>
+        s.id === sectionId
+          ? { ...s, questionIds: s.questionIds.filter((id) => id !== questionId) }
+          : s
+      )
+    );
+  }
+
+  function applyReplacement(replacement: QuestionListDTO) {
+    if (!replaceTarget) return;
+    mergeQuestionDetails([replacement]);
+    setSections((prev) =>
+      prev.map((s) =>
+        s.id === replaceTarget.sectionId
+          ? {
+              ...s,
+              questionIds: s.questionIds.map((id) =>
+                id === replaceTarget.questionId ? replacement.id : id
+              ),
+            }
+          : s
+      )
     );
   }
 
@@ -251,7 +347,8 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
       totalMarks: totalMarks ? Number(totalMarks) : 0,
       passingMarks: passingMarks || undefined,
       instructions,
-      schoolHeader,
+      headerConfig,
+      pageConfig,
       watermarkText,
     };
 
@@ -385,6 +482,7 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
             <TabsTrigger value="blueprint">
               Blueprint Mode
             </TabsTrigger>
+            <TabsTrigger value="preview">Preview</TabsTrigger>
           </TabsList>
 
           {/* ============ MANUAL MODE ============ */}
@@ -452,6 +550,74 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
                     </div>
                   </div>
                 )}
+              </CardContent>
+            </Card>
+
+            {/* Selected questions in the active section — with Replace / Remove */}
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base">In {activeSection?.title ?? "this section"}</CardTitle>
+                  <span className="text-xs text-muted-foreground">
+                    {activeSectionQuestions.length} question
+                    {activeSectionQuestions.length === 1 ? "" : "s"}
+                  </span>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {activeSectionQuestions.length === 0 && (
+                  <p className="py-4 text-center text-sm text-slate-500">
+                    Nothing selected yet. Search below and tick the questions you want.
+                  </p>
+                )}
+                {activeSectionQuestions.map((q, idx) => (
+                  <div
+                    key={q.id}
+                    className="flex items-start gap-3 rounded-lg border bg-card p-3"
+                  >
+                    <span className="shrink-0 text-sm font-semibold text-muted-foreground">
+                      {idx + 1}.
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm line-clamp-2">
+                        <KaTeXRenderer text={q.questionText} />
+                      </p>
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        <Badge variant="secondary" className="text-[10px]">
+                          {formatQuestionType(q.questionType)}
+                        </Badge>
+                        <Badge variant="outline" className="text-[10px]">
+                          {q.marks} marks
+                        </Badge>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="xs"
+                        className="gap-1"
+                        title="Swap this question for another from the bank"
+                        onClick={() =>
+                          setReplaceTarget({ sectionId: activeSectionId, questionId: q.id })
+                        }
+                      >
+                        <Repeat2 className="h-3 w-3" />
+                        Replace
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        className="text-destructive hover:text-destructive"
+                        title="Remove from this section"
+                        onClick={() => removeQuestionFromSection(activeSectionId, q.id)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
               </CardContent>
             </Card>
 
@@ -568,6 +734,7 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
                             <Checkbox
                               checked={isSelected}
                               onCheckedChange={() => toggleQuestionInActiveSection(q.id)}
+                              onClick={(e) => e.stopPropagation()}
                               className="mt-0.5"
                             />
                             <div className="flex-1 min-w-0">
@@ -833,6 +1000,56 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
               </CardContent>
             </Card>
           </TabsContent>
+
+          {/* ============ PREVIEW ============ */}
+          <TabsContent value="preview" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Paper Preview</CardTitle>
+                <p className="text-xs text-slate-400">
+                  Exactly how this will print. Don&apos;t like a question? Hit Replace.
+                </p>
+              </CardHeader>
+              <CardContent>
+                <PaperPreview
+                  title={title || "Untitled paper"}
+                  meta={[
+                    totalMarks ? `Total Marks: ${totalMarks}` : null,
+                    duration ? `Duration: ${duration} min` : null,
+                  ]
+                    .filter(Boolean)
+                    .join("  •  ")}
+                  instructions={instructions}
+                  headerConfig={headerConfig}
+                  headerContext={headerContext}
+                  logoUrl={paperDefaults.logoUrl}
+                  sections={sections.map((s) => ({
+                    id: s.id,
+                    title: s.title,
+                    instructions: s.instructions,
+                    questions: s.questionIds
+                      .map((id) => ({ key: id, question: questionDetails[id] }))
+                      .filter((p): p is { key: string; question: QuestionListDTO } =>
+                        Boolean(p.question)
+                      ),
+                  }))}
+                  renderQuestionActions={(sectionId, pq) => (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      title="Replace this question"
+                      onClick={() =>
+                        setReplaceTarget({ sectionId, questionId: pq.question.id })
+                      }
+                    >
+                      <Repeat2 className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
+                />
+              </CardContent>
+            </Card>
+          </TabsContent>
         </Tabs>
       </div>
 
@@ -840,19 +1057,26 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
       <div className="space-y-6">
         <Card className="sticky top-6">
           <CardHeader>
-            <CardTitle className="text-base">PDF Customization</CardTitle>
+            <CardTitle className="text-base">Paper Customization</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
               <Label>School Header</Label>
-              <Textarea
-                value={schoolHeader}
-                onChange={(e) => setSchoolHeader(e.target.value)}
-                placeholder={"Demo High School\nAhmedabad, Gujarat\nPhone: +91 98765 43210"}
-                className="text-sm"
-                rows={3}
+              <HeaderEditor
+                value={headerConfig}
+                onChange={setHeaderConfig}
+                context={headerContext}
+                logoUrl={paperDefaults.logoUrl}
+                schoolDefault={paperDefaults.defaultHeader}
+                schoolProfile={paperDefaults}
               />
             </div>
+            <Separator />
+            <div className="space-y-2">
+              <Label>Page Layout (PDF &amp; Word)</Label>
+              <PageSettingsEditor value={pageConfig} onChange={setPageConfig} />
+            </div>
+            <Separator />
             <div className="space-y-2">
               <Label>Watermark Text</Label>
               <Input
@@ -899,7 +1123,7 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
 
             <Button
               className="w-full"
-              onClick={handleSubmit}
+              onClick={() => startTransition(() => void handleSubmit())}
               disabled={isPending || !title}
             >
               {isPending ? "Creating..." : "Create Paper"}
@@ -907,6 +1131,16 @@ export function PaperBuilderClient({ taxonomy }: PaperBuilderProps) {
           </CardContent>
         </Card>
       </div>
+
+      <ReplaceQuestionDialog
+        open={!!replaceTarget}
+        onOpenChange={(open) => {
+          if (!open) setReplaceTarget(null);
+        }}
+        current={replaceTarget ? (questionDetails[replaceTarget.questionId] ?? null) : null}
+        excludeIds={[...allSelectedIds]}
+        onSelect={applyReplacement}
+      />
     </div>
   );
 }

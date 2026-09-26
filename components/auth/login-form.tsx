@@ -1,15 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { signIn } from "next-auth/react";
+import { getCsrfToken, getSession } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
-import { GraduationCap, Loader2, AlertCircle } from "lucide-react";
+import { GraduationCap, Loader2, AlertCircle, Eye, EyeOff } from "lucide-react";
 
 export function LoginForm() {
   const router = useRouter();
@@ -17,6 +16,7 @@ export function LoginForm() {
   const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -28,23 +28,56 @@ export function LoginForm() {
     const password = formData.get("password") as string;
 
     try {
-      const result = await signIn("credentials", {
-        email,
-        password,
-        redirect: false,
-      });
-
-      if (result?.error) {
-        setError("Invalid email or password. Please try again.");
+      const csrfToken = await getCsrfToken();
+      if (!csrfToken) {
+        setError("Could not start a sign-in session. Please refresh and try again.");
         setLoading(false);
         return;
       }
 
+      const res = await fetch("/api/auth/callback/credentials?login=1", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Auth-Return-Redirect": "1",
+        },
+        body: new URLSearchParams({
+          csrfToken,
+          email,
+          password,
+          callbackUrl: "/dashboard",
+        }),
+        redirect: "manual",
+      });
+
+      let payload: { url?: unknown } | null = null;
+      try {
+        payload = await res.json();
+      } catch {
+        payload = null;
+      }
+
+      const rawUrl = typeof payload?.url === "string" ? payload.url : "";
+      const errorCode = rawUrl && /^https?:\/\//.test(rawUrl) ? new URL(rawUrl).searchParams.get("error") : null;
+
+      if (errorCode) {
+        setLoading(false);
+        setError(
+          errorCode === "CredentialsSignin"
+            ? "Invalid email or password. Please try again."
+            : "Sign-in was rejected. Please try again or contact your admin."
+        );
+        return;
+      }
+
+      // Refresh the React session context so the header reflects the login,
+      // then navigate to the intended page.
+      await getSession();
       router.push(callbackUrl);
       router.refresh();
     } catch {
-      setError("Something went wrong. Please try again.");
       setLoading(false);
+      setError("Sign-in service is unavailable right now. Please try again in a moment.");
     }
   }
 
@@ -109,15 +142,26 @@ export function LoginForm() {
                   Forgot password?
                 </a>
               </div>
-              <Input
-                id="password"
-                name="password"
-                type="password"
-                placeholder="Enter your password"
-                required
-                className="h-10"
-                disabled={loading}
-              />
+              <div className="relative">
+                <Input
+                  id="password"
+                  name="password"
+                  type={showPassword ? "text" : "password"}
+                  placeholder="Enter your password"
+                  required
+                  className="h-10 pr-10"
+                  disabled={loading}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  className="absolute right-2.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  tabIndex={-1}
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
 
             <Button
@@ -129,33 +173,8 @@ export function LoginForm() {
               {loading ? "Signing in..." : "Sign In"}
             </Button>
           </form>
-
-          <div className="relative my-6">
-            <Separator />
-            <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-card px-2 text-xs text-muted-foreground">
-              or
-            </span>
-          </div>
-
-          <Button
-            variant="outline"
-            className="w-full h-10 border-border/60 font-[Nunito]"
-            disabled={loading}
-          >
-            Continue with Google
-          </Button>
         </CardContent>
       </Card>
-
-      <p className="font-[Nunito] text-center text-sm text-muted-foreground">
-        Don&apos;t have an account?{" "}
-        <Link
-          href="/register"
-          className="font-semibold text-secondary hover:underline"
-        >
-          Register your school
-        </Link>
-      </p>
     </div>
   );
 }

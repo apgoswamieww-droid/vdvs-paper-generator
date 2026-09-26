@@ -6,9 +6,11 @@
 // ============================================================
 
 import { revalidatePath } from "next/cache";
-import type { Prisma, DifficultyLevel } from "@prisma/client";
+import { Prisma, type DifficultyLevel } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { requireSession } from "@/lib/session";
+import { normalizeHeaderConfig, type HeaderConfig } from "@/lib/paper-header";
+import { normalizePageConfig, type PageConfig } from "@/lib/paper-page";
 import {
   createManualPaperSchema,
   createBlueprintPaperSchema,
@@ -41,6 +43,15 @@ export type PaperListDTO = {
   _count: { sections: number; totalQuestions: number };
 };
 
+export type PaperSchoolProfile = {
+  name: string;
+  logoUrl: string | null;
+  address: string | null;
+  phone: string | null;
+  board: string | null;
+  academicYear: string | null;
+};
+
 export type PaperDetailDTO = {
   id: string;
   title: string;
@@ -52,13 +63,16 @@ export type PaperDetailDTO = {
   status: "DRAFT" | "PUBLISHED" | "ARCHIVED";
   generationMode: "MANUAL" | "BLUEPRINT";
   schoolHeader: string | null;
+  headerConfig: HeaderConfig | null;
+  pageConfig: PageConfig | null;
   watermarkText: string | null;
   pdfUrl: string | null;
   answerKeyPdfUrl: string | null;
   createdAt: string;
   updatedAt: string;
-  subject: { id: string; name: string } | null;
+  subject: { id: string; name: string; classLevel: { name: string } | null } | null;
   createdBy: { id: string; name: string | null; email: string } | null;
+  school: PaperSchoolProfile | null;
   sections: {
     id: string;
     title: string;
@@ -111,16 +125,18 @@ export async function createManualPaper(
 
   const data = parsed.data;
 
-  // Validate that all question IDs belong to the tenant
+  // Validate that all question IDs belong to the tenant (unique set — a
+  // question selected in two sections must not be flagged as missing)
   const allQuestionIds = data.sections.flatMap((s) => s.questionIds);
+  const uniqueQuestionIds = [...new Set(allQuestionIds)];
   const validQuestions = await prisma.question.findMany({
-    where: { id: { in: allQuestionIds }, schoolId: session.schoolId },
+    where: { id: { in: uniqueQuestionIds }, schoolId: session.schoolId },
     select: { id: true, marks: true },
   });
 
-  if (validQuestions.length !== allQuestionIds.length) {
+  if (validQuestions.length !== uniqueQuestionIds.length) {
     const foundIds = new Set(validQuestions.map((q) => q.id));
-    const missing = allQuestionIds.filter((id) => !foundIds.has(id));
+    const missing = uniqueQuestionIds.filter((id) => !foundIds.has(id));
     return {
       success: false,
       error: `${missing.length} question(s) not found in your school. Please refresh and try again.`,
@@ -131,59 +147,68 @@ export async function createManualPaper(
   const questionMarksMap = new Map(validQuestions.map((q) => [q.id, q.marks]));
 
   try {
-    const paper = await prisma.$transaction(async (tx) => {
-      const createdPaper = await tx.paper.create({
-        data: {
-          title: data.title,
-          description: data.description || null,
-          totalMarks: data.totalMarks,
-          passingMarks: data.passingMarks ? Number(data.passingMarks) : null,
-          duration: data.duration || null,
-          instructions: data.instructions || null,
-          schoolHeader: data.schoolHeader || null,
-          watermarkText: data.watermarkText || null,
-          generationMode: "MANUAL",
-          schoolId: session.schoolId,
-          subjectId: data.subjectId || null,
-          createdById: session.id,
-        },
-      });
-
-      // Create sections with questions
-      for (let sectionIdx = 0; sectionIdx < data.sections.length; sectionIdx++) {
-        const sectionData = data.sections[sectionIdx];
-        const section = await tx.paperSection.create({
+    const paper = await prisma.$transaction(
+      async (tx) => {
+        const createdPaper = await tx.paper.create({
           data: {
-            title: sectionData.title,
-            instructions: sectionData.instructions || null,
-            order: sectionIdx,
-            totalMarks: 0,
-            paperId: createdPaper.id,
+            title: data.title,
+            description: data.description || null,
+            totalMarks: data.totalMarks,
+            passingMarks: data.passingMarks ? Number(data.passingMarks) : null,
+            duration: data.duration || null,
+            instructions: data.instructions || null,
+            schoolHeader: data.schoolHeader || null,
+            headerConfig: data.headerConfig
+              ? (data.headerConfig as unknown as Prisma.InputJsonValue)
+              : Prisma.JsonNull,
+            pageConfig: data.pageConfig
+              ? (data.pageConfig as unknown as Prisma.InputJsonValue)
+              : Prisma.JsonNull,
+            watermarkText: data.watermarkText || null,
+            generationMode: "MANUAL",
+            schoolId: session.schoolId,
+            subjectId: data.subjectId || null,
+            createdById: session.id,
           },
         });
 
-        let sectionMarks = 0;
-        for (let qIdx = 0; qIdx < sectionData.questionIds.length; qIdx++) {
-          const qId = sectionData.questionIds[qIdx];
-          const marks = questionMarksMap.get(qId) || 1;
-          await tx.paperSectionQuestion.create({
+        // Create sections with questions
+        for (let sectionIdx = 0; sectionIdx < data.sections.length; sectionIdx++) {
+          const sectionData = data.sections[sectionIdx];
+          const section = await tx.paperSection.create({
             data: {
-              order: qIdx,
-              sectionId: section.id,
-              questionId: qId,
+              title: sectionData.title,
+              instructions: sectionData.instructions || null,
+              order: sectionIdx,
+              totalMarks: 0,
+              paperId: createdPaper.id,
             },
           });
-          sectionMarks += marks;
+
+          let sectionMarks = 0;
+          for (let qIdx = 0; qIdx < sectionData.questionIds.length; qIdx++) {
+            const qId = sectionData.questionIds[qIdx];
+            const marks = questionMarksMap.get(qId) || 1;
+            await tx.paperSectionQuestion.create({
+              data: {
+                order: qIdx,
+                sectionId: section.id,
+                questionId: qId,
+              },
+            });
+            sectionMarks += marks;
+          }
+
+          await tx.paperSection.update({
+            where: { id: section.id },
+            data: { totalMarks: sectionMarks },
+          });
         }
 
-        await tx.paperSection.update({
-          where: { id: section.id },
-          data: { totalMarks: sectionMarks },
-        });
-      }
-
-      return createdPaper;
-    });
+        return createdPaper;
+      },
+      { maxWait: 15000, timeout: 120000 }
+    );
 
     revalidatePapers();
     return { success: true, id: paper.id, message: "Paper created successfully." };
@@ -228,108 +253,117 @@ export async function createBlueprintPaper(
   }
 
   try {
-    const paper = await prisma.$transaction(async (tx) => {
-      const createdPaper = await tx.paper.create({
-        data: {
-          title: data.title,
-          description: data.description || null,
-          totalMarks: data.totalMarks,
-          passingMarks: data.passingMarks ? Number(data.passingMarks) : null,
-          duration: data.duration || null,
-          instructions: data.instructions || null,
-          schoolHeader: data.schoolHeader || null,
-          watermarkText: data.watermarkText || null,
-          generationMode: "BLUEPRINT",
-          schoolId: session.schoolId,
-          subjectId: data.subjectId,
-          createdById: session.id,
-        },
-      });
-
-      const usedQuestionIds = new Set<string>();
-
-      for (let ruleIdx = 0; ruleIdx < data.rules.length; ruleIdx++) {
-        const rule = data.rules[ruleIdx];
-        const { chapterId, questionType, count, marksEach, difficultyDistribution } = rule;
-
-        // Build difficulty pool split
-        const difficultySplits = buildDifficultySplit(count, difficultyDistribution);
-
-        const selectedQuestions: { id: string }[] = [];
-
-        for (const [difficulty, pickCount] of difficultySplits) {
-          if (pickCount <= 0) continue;
-
-          const candidates = await tx.question.findMany({
-            where: {
-              schoolId: session.schoolId,
-              subjectId: data.subjectId,
-              chapterId,
-              questionType,
-              difficulty: difficulty as DifficultyLevel,
-              id: { notIn: Array.from(usedQuestionIds) },
-            },
-            select: { id: true },
-            orderBy: { createdAt: "desc" },
-          });
-
-          // Randomly pick from candidates using Fisher-Yates shuffle
-          const shuffled = shuffleArray(candidates);
-          const picked = shuffled.slice(0, pickCount);
-
-          for (const q of picked) {
-            usedQuestionIds.add(q.id);
-            selectedQuestions.push(q);
-          }
-        }
-
-        // If we couldn't pick enough, relax difficulty constraint and fill
-        if (selectedQuestions.length < count) {
-          const remaining = count - selectedQuestions.length;
-          const filler = await tx.question.findMany({
-            where: {
-              schoolId: session.schoolId,
-              subjectId: data.subjectId,
-              chapterId,
-              questionType,
-              id: { notIn: Array.from(usedQuestionIds) },
-            },
-            select: { id: true },
-            orderBy: { createdAt: "desc" },
-          });
-
-          const picked = shuffleArray(filler).slice(0, remaining);
-          for (const q of picked) {
-            usedQuestionIds.add(q.id);
-            selectedQuestions.push(q);
-          }
-        }
-
-        // Create section for this rule
-        const section = await tx.paperSection.create({
+    const paper = await prisma.$transaction(
+      async (tx) => {
+        const createdPaper = await tx.paper.create({
           data: {
-            title: `${chapterNameFallback(rule)} — ${formatQuestionType(questionType)}`,
-            instructions: `${count} × ${marksEach} marks = ${count * marksEach} marks`,
-            order: ruleIdx,
-            totalMarks: count * marksEach,
-            paperId: createdPaper.id,
+            title: data.title,
+            description: data.description || null,
+            totalMarks: data.totalMarks,
+            passingMarks: data.passingMarks ? Number(data.passingMarks) : null,
+            duration: data.duration || null,
+            instructions: data.instructions || null,
+            schoolHeader: data.schoolHeader || null,
+            headerConfig: data.headerConfig
+              ? (data.headerConfig as unknown as Prisma.InputJsonValue)
+              : Prisma.JsonNull,
+            pageConfig: data.pageConfig
+              ? (data.pageConfig as unknown as Prisma.InputJsonValue)
+              : Prisma.JsonNull,
+            watermarkText: data.watermarkText || null,
+            generationMode: "BLUEPRINT",
+            schoolId: session.schoolId,
+            subjectId: data.subjectId,
+            createdById: session.id,
           },
         });
 
-        for (let qIdx = 0; qIdx < selectedQuestions.length; qIdx++) {
-          await tx.paperSectionQuestion.create({
+        const usedQuestionIds = new Set<string>();
+
+        for (let ruleIdx = 0; ruleIdx < data.rules.length; ruleIdx++) {
+          const rule = data.rules[ruleIdx];
+          const { chapterId, questionType, count, marksEach, difficultyDistribution } = rule;
+
+          // Build difficulty pool split
+          const difficultySplits = buildDifficultySplit(count, difficultyDistribution);
+
+          const selectedQuestions: { id: string }[] = [];
+
+          for (const [difficulty, pickCount] of difficultySplits) {
+            if (pickCount <= 0) continue;
+
+            const candidates = await tx.question.findMany({
+              where: {
+                schoolId: session.schoolId,
+                subjectId: data.subjectId,
+                chapterId,
+                questionType,
+                difficulty: difficulty as DifficultyLevel,
+                id: { notIn: Array.from(usedQuestionIds) },
+              },
+              select: { id: true },
+              orderBy: { createdAt: "desc" },
+            });
+
+            // Randomly pick from candidates using Fisher-Yates shuffle
+            const shuffled = shuffleArray(candidates);
+            const picked = shuffled.slice(0, pickCount);
+
+            for (const q of picked) {
+              usedQuestionIds.add(q.id);
+              selectedQuestions.push(q);
+            }
+          }
+
+          // If we couldn't pick enough, relax difficulty constraint and fill
+          if (selectedQuestions.length < count) {
+            const remaining = count - selectedQuestions.length;
+            const filler = await tx.question.findMany({
+              where: {
+                schoolId: session.schoolId,
+                subjectId: data.subjectId,
+                chapterId,
+                questionType,
+                id: { notIn: Array.from(usedQuestionIds) },
+              },
+              select: { id: true },
+              orderBy: { createdAt: "desc" },
+            });
+
+            const picked = shuffleArray(filler).slice(0, remaining);
+            for (const q of picked) {
+              usedQuestionIds.add(q.id);
+              selectedQuestions.push(q);
+            }
+          }
+
+          // Create section for this rule
+          const section = await tx.paperSection.create({
             data: {
-              order: qIdx,
-              marksOverride: marksEach,
-              sectionId: section.id,
-              questionId: selectedQuestions[qIdx].id,
+              title: `${chapterNameFallback(rule)} — ${formatQuestionType(questionType)}`,
+              instructions: `${count} × ${marksEach} marks = ${count * marksEach} marks`,
+              order: ruleIdx,
+              totalMarks: count * marksEach,
+              paperId: createdPaper.id,
             },
           });
-        }
-      }
 
-      return createdPaper;
-    });
+          for (let qIdx = 0; qIdx < selectedQuestions.length; qIdx++) {
+            await tx.paperSectionQuestion.create({
+              data: {
+                order: qIdx,
+                marksOverride: marksEach,
+                sectionId: section.id,
+                questionId: selectedQuestions[qIdx].id,
+              },
+            });
+          }
+        }
+
+        return createdPaper;
+      },
+      { maxWait: 15000, timeout: 120000 }
+    );
 
     revalidatePapers();
     return { success: true, id: paper.id, message: "Paper auto-generated successfully." };
@@ -379,6 +413,16 @@ export async function updatePaper(
   if (data.passingMarks !== undefined) updateData.passingMarks = data.passingMarks ? Number(data.passingMarks) : null;
   if (data.instructions !== undefined) updateData.instructions = data.instructions || null;
   if (data.schoolHeader !== undefined) updateData.schoolHeader = data.schoolHeader || null;
+  if (data.headerConfig !== undefined) {
+    updateData.headerConfig = data.headerConfig
+      ? (data.headerConfig as unknown as Prisma.InputJsonValue)
+      : Prisma.DbNull;
+  }
+  if (data.pageConfig !== undefined) {
+    updateData.pageConfig = data.pageConfig
+      ? (data.pageConfig as unknown as Prisma.InputJsonValue)
+      : Prisma.DbNull;
+  }
   if (data.watermarkText !== undefined) updateData.watermarkText = data.watermarkText || null;
   if (data.status !== undefined) {
     updateData.status = data.status;
@@ -533,15 +577,56 @@ export async function getPaperById(id: string): Promise<PaperDetailDTO | null> {
 
   const paper = await prisma.paper.findFirst({
     where: { id, schoolId },
-    include: {
-      subject: { select: { id: true, name: true } },
+    select: {
+      id: true,
+      title: true,
+      description: true,
+      totalMarks: true,
+      passingMarks: true,
+      duration: true,
+      instructions: true,
+      status: true,
+      generationMode: true,
+      schoolHeader: true,
+      headerConfig: true,
+      pageConfig: true,
+      watermarkText: true,
+      pdfUrl: true,
+      answerKeyPdfUrl: true,
+      createdAt: true,
+      updatedAt: true,
+      subject: {
+        select: {
+          id: true,
+          name: true,
+          classLevel: { select: { name: true } },
+        },
+      },
+      school: {
+        select: {
+          name: true,
+          logoUrl: true,
+          address: true,
+          phone: true,
+          board: true,
+          academicYear: true,
+        },
+      },
       createdBy: { select: { id: true, name: true, email: true } },
       sections: {
         orderBy: { order: "asc" },
-        include: {
+        select: {
+          id: true,
+          title: true,
+          instructions: true,
+          order: true,
+          totalMarks: true,
           questions: {
             orderBy: { order: "asc" },
-            include: {
+            select: {
+              id: true,
+              order: true,
+              marksOverride: true,
               question: {
                 select: {
                   id: true,
@@ -576,6 +661,9 @@ export async function getPaperById(id: string): Promise<PaperDetailDTO | null> {
     status: paper.status,
     generationMode: paper.generationMode,
     schoolHeader: paper.schoolHeader,
+    // Legacy flat rows are upgraded to the current row/cell layout on read.
+    headerConfig: paper.headerConfig ? normalizeHeaderConfig(paper.headerConfig) : null,
+    pageConfig: paper.pageConfig ? normalizePageConfig(paper.pageConfig) : null,
     watermarkText: paper.watermarkText,
     pdfUrl: paper.pdfUrl,
     answerKeyPdfUrl: paper.answerKeyPdfUrl,
@@ -583,6 +671,7 @@ export async function getPaperById(id: string): Promise<PaperDetailDTO | null> {
     updatedAt: paper.updatedAt.toISOString(),
     subject: paper.subject,
     createdBy: paper.createdBy,
+    school: paper.school,
     sections: paper.sections.map((s) => ({
       id: s.id,
       title: s.title,
@@ -597,6 +686,76 @@ export async function getPaperById(id: string): Promise<PaperDetailDTO | null> {
       })),
     })),
   };
+}
+
+// ============================================================
+//  Replace a question inside a paper section
+//  Used when a teacher doesn't like a generated pick and wants to
+//  swap in another question from the bank.
+// ============================================================
+
+export async function replacePaperQuestion(input: {
+  sectionId: string;
+  currentQuestionId: string;
+  newQuestionId: string;
+}): Promise<ActionState> {
+  const { schoolId } = await requireSession();
+
+  const section = await prisma.paperSection.findFirst({
+    where: { id: input.sectionId, paper: { schoolId } },
+    select: { id: true, paperId: true },
+  });
+  if (!section) return { success: false, error: "Paper section not found." };
+
+  if (input.currentQuestionId === input.newQuestionId) {
+    return { success: false, error: "Pick a different question to swap in." };
+  }
+
+  const replacement = await prisma.question.findFirst({
+    where: { id: input.newQuestionId, schoolId, isActive: true },
+    select: { id: true },
+  });
+  if (!replacement) {
+    return { success: false, error: "That question is not available in your school." };
+  }
+
+  const existing = await prisma.paperSectionQuestion.findFirst({
+    where: { sectionId: section.id, questionId: input.currentQuestionId },
+    select: { id: true },
+  });
+  if (!existing) return { success: false, error: "That question is no longer in this section." };
+
+  const duplicate = await prisma.paperSectionQuestion.findFirst({
+    where: { sectionId: section.id, questionId: input.newQuestionId },
+    select: { id: true },
+  });
+  if (duplicate) return { success: false, error: "That question is already in this section." };
+
+  try {
+    await prisma.paperSectionQuestion.update({
+      where: { id: existing.id },
+      data: { questionId: input.newQuestionId },
+    });
+    await recalcSectionMarks(section.id);
+    revalidatePapers();
+    return { success: true, message: "Question replaced." };
+  } catch {
+    return { success: false, error: "Could not replace the question." };
+  }
+}
+
+/**
+ * Recomputes a section's printed marks from its current questions.
+ * The paper's `totalMarks` is deliberately left alone — it is an authored
+ * target, not a sum, so swapping a question must not silently retotal it.
+ */
+async function recalcSectionMarks(sectionId: string): Promise<void> {
+  const rows = await prisma.paperSectionQuestion.findMany({
+    where: { sectionId },
+    select: { marksOverride: true, question: { select: { marks: true } } },
+  });
+  const total = rows.reduce((sum, r) => sum + (r.marksOverride ?? r.question.marks), 0);
+  await prisma.paperSection.update({ where: { id: sectionId }, data: { totalMarks: total } });
 }
 
 // ============================================================
@@ -644,6 +803,7 @@ function formatQuestionType(type: string): string {
     FILL_IN_THE_BLANK: "Fill in the Blanks",
     MATCH_THE_FOLLOWING: "Match the Following",
     CASE_STUDY: "Case Study",
+    NUMERIC: "Numeric",
   };
   return map[type] || type;
 }

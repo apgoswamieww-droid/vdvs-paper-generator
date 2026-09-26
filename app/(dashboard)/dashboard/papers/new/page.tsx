@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
 import { getTaxonomyTree } from "../../questions/actions";
+import prisma from "@/lib/prisma";
+import { requireSession } from "@/lib/session";
+import { EMPTY_HEADER, defaultHeaderFromSchool } from "@/lib/paper-header";
 import { PaperBuilderClient } from "./paper-builder-client";
 
 export const metadata: Metadata = {
@@ -9,6 +12,29 @@ export const metadata: Metadata = {
 
 export default async function NewPaperPage() {
   const taxonomy = await getTaxonomyTree();
+  const { schoolId } = await requireSession();
+  const school = await prisma.school.findUnique({
+    where: { id: schoolId },
+    select: {
+      defaultInstructions: true,
+      watermarkText: true,
+      name: true,
+      logoUrl: true,
+      address: true,
+      phone: true,
+      board: true,
+      academicYear: true,
+    },
+  });
+
+  const profile = {
+    name: school?.name ?? "",
+    logoUrl: school?.logoUrl ?? null,
+    address: school?.address ?? null,
+    phone: school?.phone ?? null,
+    board: school?.board ?? null,
+    academicYear: school?.academicYear ?? null,
+  };
 
   return (
     <div className="space-y-6">
@@ -18,7 +44,15 @@ export default async function NewPaperPage() {
           Choose between Manual selection or Blueprint auto-generation.
         </p>
       </div>
-      <PaperBuilderClient taxonomy={taxonomy} />
+      <PaperBuilderClient
+        taxonomy={taxonomy}
+        paperDefaults={{
+          ...profile,
+          defaultInstructions: school?.defaultInstructions ?? "",
+          watermarkText: school?.watermarkText ?? "",
+          defaultHeader: school ? defaultHeaderFromSchool(profile) : EMPTY_HEADER,
+        }}
+      />
     </div>
   );
 }

@@ -2,6 +2,7 @@
 
 import { requireSession } from "@/lib/session";
 import prisma from "@/lib/prisma";
+import { parseMcqOptions, parseNumericAnswer } from "@/lib/question-options";
 
 export type StudentAssignmentDTO = {
   id: string;
@@ -131,7 +132,17 @@ export async function submitExam(submissionId: string, answers: Record<string, s
               sections: {
                 include: {
                   questions: {
-                    include: { question: { select: { id: true, options: true, marks: true, questionType: true } } },
+                    include: {
+                      question: {
+                        select: {
+                          id: true,
+                          options: true,
+                          marks: true,
+                          questionType: true,
+                          answerKey: true,
+                        },
+                      },
+                    },
                   },
                 },
               },
@@ -153,17 +164,24 @@ export async function submitExam(submissionId: string, answers: Record<string, s
       where: { submissionId, questionId },
     });
 
-    // Auto-grade MCQ
+    // Auto-grade MCQ and numeric questions
     let awardedMarks: number | null = null;
     const allQuestions = submission.assignment.paper.sections.flatMap((s) => s.questions);
     const pq = allQuestions.find((pq) => pq.questionId === questionId);
     if (pq?.question.questionType === "MCQ" && pq.question.options) {
-      const options = pq.question.options as any[];
-      const correct = options.find((o: any) => o.isCorrect);
-      if (correct && correct.label === answerText) {
-        awardedMarks = pq.marksOverride ?? pq.question.marks;
-      } else {
-        awardedMarks = 0;
+      // Options are stored as { kind: "mcq", choices: [...] } — parse both shapes.
+      const choices = parseMcqOptions(pq.question.options);
+      const correct = choices.find((o) => o.isCorrect);
+      awardedMarks =
+        correct && correct.label === answerText ? (pq.marksOverride ?? pq.question.marks) : 0;
+    } else if (pq?.question.questionType === "NUMERIC" && pq.question.answerKey) {
+      // Numeric answers are exact, so they grade themselves — tolerating the
+      // usual notation differences (25% / 1,000 / 1/2) via the shared parser.
+      const expected = parseNumericAnswer(pq.question.answerKey);
+      const given = parseNumericAnswer(answerText);
+      if (expected !== null && given !== null) {
+        awardedMarks =
+          Math.abs(expected - given) < 1e-9 ? (pq.marksOverride ?? pq.question.marks) : 0;
       }
     }
 

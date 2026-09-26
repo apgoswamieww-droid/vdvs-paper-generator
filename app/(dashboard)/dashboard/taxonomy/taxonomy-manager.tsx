@@ -424,14 +424,14 @@ function TaxonomyDialog({
           {dialog.entity === "subject" && (
             <div className="space-y-1.5">
               <Label>Medium</Label>
-              <input type="hidden" name="medium" value={dialog.mode === "edit" && dialog.entity === "subject" ? (dialog as { medium?: string }).medium ?? "ENGLISH" : "ENGLISH"} />
               <Select
+                name="medium"
                 items={MEDIUM_OPTIONS}
-                value={dialog.mode === "edit" && dialog.entity === "subject" ? (dialog as { medium?: string }).medium ?? "ENGLISH" : "ENGLISH"}
-                onValueChange={(v) => {
-                  const hidden = document.querySelector('input[name="medium"]') as HTMLInputElement | null;
-                  if (hidden && typeof v === "string") hidden.value = v;
-                }}
+                defaultValue={
+                  dialog.mode === "edit"
+                    ? dialog.medium ?? "ENGLISH"
+                    : "ENGLISH"
+                }
               >
                 <SelectTrigger className="w-full">
                   <SelectValue />
