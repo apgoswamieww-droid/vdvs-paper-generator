@@ -5,7 +5,7 @@
 import { Metadata } from "next";
 import prisma from "@/lib/prisma";
 import { requireSession } from "@/lib/session";
-import { getTaxonomyTree, listQuestions } from "./actions";
+import { getTaxonomyTree } from "./actions";
 import { QuestionsClient } from "./questions-client";
 
 export const metadata: Metadata = {
@@ -16,8 +16,9 @@ export const metadata: Metadata = {
 export default async function QuestionsPage() {
   const session = await requireSession();
 
-  const [initialData, tree, teachers] = await Promise.all([
-    listQuestions({ page: 1, pageSize: 20 }),
+  // Questions are loaded on demand only (search, filter or "All") — the
+  // page itself never prefetches the bank.
+  const [tree, teachers] = await Promise.all([
     getTaxonomyTree(),
     session.role === "TEACHER"
       ? Promise.resolve([])
@@ -34,12 +35,11 @@ export default async function QuestionsPage() {
         <div>
           <h1 className="font-[Rasa] text-2xl font-bold tracking-tight">Question Bank</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {initialData.meta.total} questions · Gujarati Unicode & KaTeX supported
+            Search by text, tag, year or question ID like #506892 · Gujarati Unicode & KaTeX supported
           </p>
         </div>
       </div>
       <QuestionsClient
-        initialData={initialData}
         tree={tree}
         isAdmin={session.role !== "TEACHER"}
         teachers={teachers.map((t) => ({ id: t.id, name: t.name ?? t.id }))}

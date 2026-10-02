@@ -7,6 +7,7 @@
 
 import { useState, useTransition, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -19,12 +20,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { KaTeXRenderer } from "@/components/shared/katex-text";
 import { HeaderRenderer } from "@/components/paper/header-renderer";
-import { Repeat2, Settings, Trash2 } from "lucide-react";
+import { Repeat2, Settings, Trash2, Languages } from "lucide-react";
 import { PageSettingsEditor } from "@/components/paper/page-settings-editor";
 import { PaperPreview } from "@/components/paper/paper-preview";
 import { ReplaceQuestionDialog } from "@/components/paper/replace-question-dialog";
 import {
   getQuestionsByIds,
+  getTranslationMap,
   listQuestions,
   type TaxonomyNode,
   type QuestionListDTO,
@@ -138,6 +140,7 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
   const [questionTotal, setQuestionTotal] = useState(0);
   const [questionPage, setQuestionPage] = useState(1);
   const [isSearching, startSearchTransition] = useTransition();
+  const [isSwapPending, startSwapTransition] = useTransition();
 
   // Full details for every question already picked, so the selected list and the
   // preview can render them without re-searching.
@@ -166,6 +169,19 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
   const activeSectionQuestions = (activeSection?.questionIds ?? [])
     .map((id) => questionDetails[id])
     .filter((q): q is QuestionListDTO => Boolean(q));
+
+  // Medium of the current selection (first loaded detail) — decides which
+  // language the bilingual swap button offers to generate.
+  const selectedMedium: (typeof MEDIUMS)[number] | null = (() => {
+    for (const id of sections.flatMap((s) => s.questionIds)) {
+      const q = questionDetails[id];
+      if (q) return q.medium;
+    }
+    return null;
+  })();
+  const swapTarget: (typeof MEDIUMS)[number] =
+    selectedMedium === "GUJARATI" ? "ENGLISH" : "GUJARATI";
+  const hasSelectedQuestions = sections.some((s) => s.questionIds.length > 0);
 
   // Header token context (live for the preview)
   const headerContext = useMemo(() => {
@@ -307,6 +323,59 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
           : s
       )
     );
+  }
+
+  // ---- Bilingual swap ----
+  /**
+   * Replaces every selected question with its paired translation in the
+   * target medium. Only the ids change — section order, count and marks
+   * structure are preserved. Questions without a pair stay as they are.
+   */
+  function swapSelectedToTarget() {
+    const target = swapTarget;
+    const ids = sections.flatMap((s) => s.questionIds);
+    if (ids.length === 0) return;
+
+    startSwapTransition(async () => {
+      try {
+        const map = await getTranslationMap(ids);
+        let swapped = 0;
+        let missing = 0;
+
+        const nextSections = sections.map((s) => ({
+          ...s,
+          questionIds: s.questionIds.map((id) => {
+            const current = questionDetails[id];
+            if (current?.medium === target) return id; // already in target language
+            const partner = map[id];
+            if (partner && partner.medium === target) {
+              swapped++;
+              return partner.id;
+            }
+            missing++;
+            return id;
+          }),
+        }));
+        setSections(nextSections);
+        mergeQuestionDetails(Object.values(map));
+
+        if (swapped > 0) {
+          toast.success(
+            `Swapped ${swapped} question${swapped === 1 ? "" : "s"} to ${MEDIUM_LABELS[target]}.`
+          );
+        }
+        if (missing > 0) {
+          toast.info(
+            `${missing} question${missing === 1 ? "" : "s"} kept as-is — no linked ${MEDIUM_LABELS[target]} translation yet.`
+          );
+        }
+        if (swapped === 0 && missing === 0) {
+          toast(`All selected questions are already in ${MEDIUM_LABELS[target]}.`);
+        }
+      } catch {
+        toast.error("Could not swap questions.");
+      }
+    });
   }
 
   // ---- Blueprint Rule Management ----
@@ -489,11 +558,29 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
             {/* Section Tabs */}
             <Card>
               <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <CardTitle className="text-base">Sections</CardTitle>
-                  <Button variant="outline" size="sm" onClick={addSection}>
-                    + Add Section
-                  </Button>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    {hasSelectedQuestions && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={swapSelectedToTarget}
+                        disabled={isSwapPending}
+                        title="Swap every selected question with its paired translation (order and marks preserved)"
+                      >
+                        <Languages className="mr-1 h-4 w-4" />
+                        {isSwapPending
+                          ? "Swapping…"
+                          : swapTarget === "GUJARATI"
+                            ? "Generate Gujarati Equivalent"
+                            : "Generate English Equivalent"}
+                      </Button>
+                    )}
+                    <Button variant="outline" size="sm" onClick={addSection}>
+                      + Add Section
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">

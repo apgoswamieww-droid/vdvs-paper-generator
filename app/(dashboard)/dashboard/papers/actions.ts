@@ -292,6 +292,7 @@ export async function createBlueprintPaper(
               where: {
                 schoolId: session.schoolId,
                 subjectId: data.subjectId,
+                medium: subject.medium,
                 chapterId,
                 questionType,
                 difficulty: difficulty as DifficultyLevel,
@@ -318,6 +319,7 @@ export async function createBlueprintPaper(
               where: {
                 schoolId: session.schoolId,
                 subjectId: data.subjectId,
+                medium: subject.medium,
                 chapterId,
                 questionType,
                 id: { notIn: Array.from(usedQuestionIds) },

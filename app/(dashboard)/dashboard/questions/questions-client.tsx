@@ -4,7 +4,7 @@
 //  Question Bank client — advanced data table (Dark-Only Refactor)
 // ============================================================
 
-import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { formatDateISO } from "@/lib/utils";
 import {
@@ -47,11 +47,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Plus, Upload, Search, X, Pencil, Trash2, Eye, UserCheck, ChevronLeft, ChevronRight } from "lucide-react";
+import { Plus, Upload, Search, X, Pencil, Trash2, Eye, UserCheck, ChevronLeft, ChevronRight, List, Languages } from "lucide-react";
 import { ImportDialog } from "./import/import-dialog";
 import { QuestionDetailDialog } from "./question-detail-dialog";
 
 type Filters = Partial<QuestionFilterInput>;
+
+/** Shown before any search/filter/"All" — no questions are loaded on entry. */
+const IDLE_DATA: PaginatedResponse<QuestionListDTO> = {
+  items: [],
+  meta: { page: 1, pageSize: 20, total: 0, totalPages: 1 },
+};
+const DEFAULT_FILTERS: Filters = { page: 1, pageSize: 20 };
 
 const DIFFICULTY_STYLES: Record<string, string> = {
   EASY: "bg-emerald-500/15 text-emerald-400",
@@ -86,23 +93,22 @@ const MEDIUM_LABELS: Record<string, string> = {
 };
 
 export function QuestionsClient({
-  initialData,
   tree,
   isAdmin,
   teachers,
 }: {
-  initialData: PaginatedResponse<QuestionListDTO>;
   tree: TaxonomyNode[];
   isAdmin: boolean;
   teachers: { id: string; name: string }[];
 }) {
   const router = useRouter();
-  const [data, setData] = useState(initialData);
-  const [filters, setFilters] = useState<Filters>({ page: 1, pageSize: 20 });
+  const [data, setData] = useState(IDLE_DATA);
+  // "idle" = nothing queried yet (prompt + Show all); "list" = fetching/rendering.
+  const [mode, setMode] = useState<"idle" | "list">("idle");
+  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [searchInput, setSearchInput] = useState("");
   const [classId, setClassId] = useState("");
   const [isPending, startTransition] = useTransition();
-  const firstRun = useRef(true);
 
   // Dialog state
   const [importOpen, setImportOpen] = useState(false);
@@ -127,25 +133,25 @@ export function QuestionsClient({
     });
   }, []);
 
+  // Load only once the user engages (search, filter, page, or Show all).
   useEffect(() => {
-    if (firstRun.current) {
-      firstRun.current = false;
-      return;
-    }
+    if (mode === "idle") return;
     fetchPage(filters);
-  }, [filters, fetchPage]);
+  }, [mode, filters, fetchPage]);
 
-  // Debounced search
+  // Debounced search — also flips the page out of idle on first keystroke.
   useEffect(() => {
+    if (!searchInput && mode === "idle") return;
     const t = setTimeout(() => {
       setFilters((f) =>
         searchInput === (f.search ?? "")
           ? f
           : { ...f, search: searchInput, page: 1 }
       );
+      if (searchInput) setMode("list");
     }, 350);
     return () => clearTimeout(t);
-  }, [searchInput]);
+  }, [searchInput, mode]);
 
   // Taxonomy cascade
   const subjects = useMemo(
@@ -161,8 +167,31 @@ export function QuestionsClient({
     [chapters, filters.chapterId]
   );
 
+  /** Any filter change engages the listing (fetch happens via the effect). */
+  const applyFilters = (update: (f: Filters) => Filters) => {
+    setMode("list");
+    setFilters(update);
+  };
+
   const setFilter = <K extends keyof Filters>(key: K, value: Filters[K]) =>
-    setFilters((f) => ({ ...f, [key]: value, page: 1 }));
+    applyFilters((f) => ({ ...f, [key]: value, page: 1 }));
+
+  /** Clear search + filters and list the whole bank. */
+  const showAll = () => {
+    setSearchInput("");
+    setClassId("");
+    setMode("list");
+    setFilters({ ...DEFAULT_FILTERS });
+  };
+
+  /** Back to the empty prompt without querying anything. */
+  const resetIdle = () => {
+    setSearchInput("");
+    setClassId("");
+    setMode("idle");
+    setFilters({ ...DEFAULT_FILTERS });
+    setData(IDLE_DATA);
+  };
 
   const refetch = () => fetchPage(filters);
 
@@ -228,7 +257,7 @@ export function QuestionsClient({
             <Input
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search text, tags, years..."
+              placeholder="Search text, tags, years, #ID..."
               className="pl-9 w-64"
             />
           </div>
@@ -258,7 +287,7 @@ export function QuestionsClient({
               value={classId || null}
               onChange={(v) => {
                 setClassId(v ?? "");
-                setFilters((f) => ({
+                applyFilters((f) => ({
                   ...f,
                   subjectId: "",
                   chapterId: "",
@@ -272,7 +301,7 @@ export function QuestionsClient({
               placeholder="Subject"
               value={filters.subjectId || null}
               onChange={(v) =>
-                setFilters((f) => ({
+                applyFilters((f) => ({
                   ...f,
                   subjectId: v ?? "",
                   chapterId: "",
@@ -287,7 +316,7 @@ export function QuestionsClient({
               placeholder="Chapter"
               value={filters.chapterId || null}
               onChange={(v) =>
-                setFilters((f) => ({
+                applyFilters((f) => ({
                   ...f,
                   chapterId: v ?? "",
                   topicId: "",
@@ -350,11 +379,16 @@ export function QuestionsClient({
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => {
-                setSearchInput("");
-                setClassId("");
-                setFilters({ page: 1, pageSize: 20 });
-              }}
+              onClick={showAll}
+              className="gap-1 text-muted-foreground"
+            >
+              <List className="h-3.5 w-3.5" />
+              All
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={resetIdle}
               className="gap-1 text-muted-foreground"
             >
               <X className="h-3.5 w-3.5" />
@@ -366,6 +400,25 @@ export function QuestionsClient({
 
       {/* ------- Table ------- */}
       <Card>
+        {mode === "idle" ? (
+          <div className="flex flex-col items-center justify-center gap-3 px-6 py-14 text-center">
+            <Search className="h-8 w-8 text-muted-foreground/40" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium">No questions loaded yet</p>
+              <p className="text-sm text-muted-foreground">
+                Search by text, tag, year or question ID like{" "}
+                <span className="rounded bg-muted px-1 py-0.5 font-mono text-foreground">
+                  #506892
+                </span>
+                , pick a filter, or list the whole bank.
+              </p>
+            </div>
+            <Button variant="outline" size="sm" onClick={showAll} className="gap-1.5">
+              <List className="h-3.5 w-3.5" />
+              Show all questions
+            </Button>
+          </div>
+        ) : (
         <div className="overflow-x-auto">
           <Table>
             <TableHeader>
@@ -445,6 +498,14 @@ export function QuestionsClient({
                       <Badge variant="secondary" className="text-[11px]">
                         {MEDIUM_LABELS[q.medium] ?? q.medium}
                       </Badge>
+                      {q.linked && (
+                        <Badge
+                          variant="outline"
+                          className="mt-1 block w-fit border-emerald-500/40 text-[10px] text-emerald-400"
+                        >
+                          EN/GUJ Linked
+                        </Badge>
+                      )}
                     </TableCell>
                     <TableCell>
                       <Badge variant="secondary" className="text-[11px]">
@@ -497,6 +558,21 @@ export function QuestionsClient({
                             <UserCheck className="h-3 w-3" />
                           </Button>
                         )}
+                        {!q.linked && (
+                          <Button
+                            size="icon-xs"
+                            variant="ghost"
+                            aria-label="Add bilingual translation"
+                            title="Add bilingual translation (other medium)"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              router.push(`/dashboard/questions/new?link=${q.id}`);
+                            }}
+                            className="text-muted-foreground hover:text-primary"
+                          >
+                            <Languages className="h-3 w-3" />
+                          </Button>
+                        )}
                         <Button
                           size="icon-xs"
                           variant="ghost"
@@ -539,9 +615,11 @@ export function QuestionsClient({
             </TableBody>
           </Table>
         </div>
+        )}
       </Card>
 
       {/* ------- Pagination ------- */}
+      {mode === "list" && (
       <div className="flex items-center justify-between text-sm text-muted-foreground">
         <span>
           Showing{" "}
@@ -588,6 +666,7 @@ export function QuestionsClient({
           </Button>
         </div>
       </div>
+      )}
 
       {/* ------- Dialogs ------- */}
       <QuestionDetailDialog

@@ -8,14 +8,25 @@
 import { useState } from "react";
 import { QuestionForm } from "./question-form";
 import { RecentQuestions } from "./recent-questions";
-import type { TaxonomyNode } from "./actions";
+import type { QuestionDetailDTO, TaxonomyNode } from "./actions";
 
-export function NewQuestionPageClient({ tree }: { tree: TaxonomyNode[] }) {
+export function NewQuestionPageClient({
+  tree,
+  linkParent,
+}: {
+  tree: TaxonomyNode[];
+  linkParent?: QuestionDetailDTO | null;
+}) {
   const [refreshKey, setRefreshKey] = useState(0);
 
   return (
     <div className="space-y-6">
-      <QuestionForm tree={tree} editing={null} onSaved={() => setRefreshKey((k) => k + 1)} />
+      <QuestionForm
+        tree={tree}
+        editing={null}
+        initialLink={linkParent ?? null}
+        onSaved={() => setRefreshKey((k) => k + 1)}
+      />
       <RecentQuestions refreshKey={refreshKey} />
     </div>
   );

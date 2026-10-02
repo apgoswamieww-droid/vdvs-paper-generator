@@ -143,6 +143,14 @@ export function QuestionDetailDialog({
                 AI generated
               </Badge>
             )}
+            {detail?.linked && (
+              <Badge
+                variant="outline"
+                className="border-emerald-500/30 text-[11px] text-emerald-400"
+              >
+                EN/GUJ Linked
+              </Badge>
+            )}
             {detail && <QuestionStatusPill status={detail.status} />}
           </DialogTitle>
           <DialogDescription>
@@ -181,6 +189,10 @@ export function QuestionDetailDialog({
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
               <MetaItem label="Type" value={humanize(detail.questionType)} />
               <MetaItem label="Medium" value={humanize(detail.medium)} />
+              <MetaItem
+                label="Translation"
+                value={detail.linked ? "EN/GUJ Linked" : undefined}
+              />
               <MetaItem label="Difficulty" value={humanize(detail.difficulty)} />
               <MetaItem label="Bloom" value={humanize(detail.bloomLevel)} />
               <MetaItem label="Marks" value={detail.marks} />

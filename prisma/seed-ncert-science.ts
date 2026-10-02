@@ -51,6 +51,20 @@ function subjectKey(classLevelId: string, name: string, medium: Medium): string 
   return `${classLevelId}$${name}$${medium}`;
 }
 
+/**
+ * Bilingual pair code from the English subject name: "Computer Science" →
+ * "COMPUTER-SCIENCE" (matches the Subject.code column limit of 20). The EN
+ * and GUJ halves of a pair share it — cross-language matching in
+ * resolvePairTaxonomy relies on that when names are translated.
+ */
+function slugSubjectCode(name: string): string {
+  return name
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 20);
+}
+
 function chapterKey(subjectId: string, name: string): string {
   return `${subjectId}$${name}`;
 }
@@ -158,7 +172,7 @@ async function main() {
     // ──────────────────────────────────────────────────
     const existingSubjects = await tx.subject.findMany({
       where: { schoolId: school.id },
-      select: { id: true, name: true, medium: true, classLevelId: true },
+      select: { id: true, name: true, medium: true, classLevelId: true, code: true },
     });
     const subjectIdByKey = new Map<string, string>();
     for (const s of existingSubjects) {
@@ -168,10 +182,45 @@ async function main() {
       );
     }
 
+    // ── Bilingual pair codes: the JSON interleaves [English, Gujarati]
+    // pairs, so both halves share the slug of the English name. Codes are
+    // unique per class (collisions get a -2/-3 suffix).
+    const codeByKey = new Map<string, string>();
+    const usedCodeByClass = new Map<string, Set<string>>();
+    for (const entry of data) {
+      const classId = classIdByName.get(normalizeStandard(entry.standard));
+      if (!classId) continue;
+      const used = usedCodeByClass.get(classId) ?? new Set<string>();
+      usedCodeByClass.set(classId, used);
+      for (let i = 0; i + 1 < entry.subjects.length; i += 2) {
+        const en = entry.subjects[i];
+        const guj = entry.subjects[i + 1];
+        if (en.medium !== "English" || guj.medium !== "Gujarati") continue;
+        const base = slugSubjectCode(en.name);
+        let code = base;
+        for (let n = 2; used.has(code); n++) code = `${base.slice(0, 17)}-${n}`;
+        used.add(code);
+        codeByKey.set(subjectKey(classId, en.name, Medium.ENGLISH), code);
+        codeByKey.set(subjectKey(classId, guj.name, Medium.GUJARATI), code);
+      }
+    }
+
+    // Backfill codes onto subjects created before pair codes existed
+    // (the demo DB) — this is what makes cross-language matching work now.
+    let backfilledCodes = 0;
+    for (const s of existingSubjects) {
+      const code = codeByKey.get(subjectKey(s.classLevelId, s.name, s.medium));
+      if (code && s.code !== code) {
+        await tx.subject.update({ where: { id: s.id }, data: { code } });
+        backfilledCodes++;
+      }
+    }
+
     const missingSubjects: Array<{
       classLevelId: string;
       name: string;
       medium: Medium;
+      code: string | null;
     }> = [];
     for (const entry of data) {
       const classId = classIdByName.get(normalizeStandard(entry.standard));
@@ -179,7 +228,12 @@ async function main() {
       for (const sub of entry.subjects) {
         const medium = toMedium(sub.medium);
         if (!subjectIdByKey.has(subjectKey(classId, sub.name, medium))) {
-          missingSubjects.push({ classLevelId: classId, name: sub.name, medium });
+          missingSubjects.push({
+            classLevelId: classId,
+            name: sub.name,
+            medium,
+            code: codeByKey.get(subjectKey(classId, sub.name, medium)) ?? null,
+          });
         }
       }
     }
@@ -188,6 +242,7 @@ async function main() {
           data: missingSubjects.map((s) => ({
             name: s.name,
             medium: s.medium,
+            code: s.code,
             classLevelId: s.classLevelId,
             schoolId: school.id,
           })),
@@ -195,6 +250,9 @@ async function main() {
       : [];
     for (const s of createdSubjects) {
       subjectIdByKey.set(subjectKey(s.classLevelId, s.name, s.medium), s.id);
+    }
+    if (backfilledCodes > 0) {
+      console.log(`   ↳ backfilled subject codes on ${backfilledCodes} existing rows.`);
     }
 
     // ──────────────────────────────────────────────────

@@ -10,7 +10,7 @@
 //  - Live preview renders Gujarati Unicode + $...$ KaTeX
 // ============================================================
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useForm, useFieldArray } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -18,8 +18,15 @@ import { toast } from "sonner";
 import {
   createQuestion,
   updateQuestion,
+  getQuestionById,
+  listQuestions,
+  unlinkTranslation,
+  autoTranslateCreatePair,
+  aiCreateCounterpart,
+  retranslateCounterpart,
   type TaxonomyNode,
   type QuestionDetailDTO,
+  type QuestionListDTO,
 } from "./actions";
 import {
   questionFormSchema,
@@ -32,6 +39,7 @@ import {
 } from "@/lib/validations";
 import { KaTeXRenderer } from "@/components/shared/katex-text";
 import { AdvancedCustomEditor } from "@/components/editor/advanced-custom-editor";
+import { LoadingButton } from "@/components/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -43,7 +51,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ArrowLeft, Hash } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Hash, Languages, Search, Sparkles } from "lucide-react";
 import {
   detectNumericConversion,
   mcqOptionsLayout,
@@ -69,6 +77,17 @@ const MEDIUM_LABELS: Record<string, string> = {
   GUJARATI: "Gujarati",
 };
 
+// Types whose answer key / explanation are language-dependent — for these,
+// the AI translate call also translates the answer (mirrors the server-side
+// list in actions.ts).
+const TRANSLATABLE_ANSWER_TYPES = [
+  "SHORT_ANSWER",
+  "LONG_ANSWER",
+  "FILL_IN_THE_BLANK",
+  "MATCH_THE_FOLLOWING",
+  "CASE_STUDY",
+];
+
 // Difficulty → Bloom level mapping
 const DIFFICULTY_BLOOM_MAP: Record<string, { levels: string[]; default: string; label: string }> = {
   EASY:   { levels: ["REMEMBER", "UNDERSTAND"],           default: "REMEMBER",  label: "Easy → Remember / Understand" },
@@ -83,10 +102,13 @@ export function QuestionForm({
   editing,
   tree,
   onSaved,
+  initialLink,
 }: {
   editing: QuestionDetailDTO | null;
   tree: TaxonomyNode[];
   onSaved?: () => void;
+  /** Deep-link target (?link=<id>): open the form as this question's translation. */
+  initialLink?: QuestionDetailDTO | null;
 }) {
   const router = useRouter();
 
@@ -96,7 +118,25 @@ export function QuestionForm({
     return tree.find((c) => c.children.some((s) => s.id === editing.subject?.id))?.id ?? "";
   });
   const [classError, setClassError] = useState<string | null>(null);
-  const submitModeRef = useRef<"save" | "saveNew">("save");
+  const submitModeRef = useRef<"save" | "saveNew" | "autoTranslate" | "saveLink">("save");
+  const [autoPending, setAutoPending] = useState(false);
+  const [aiFillPending, setAiFillPending] = useState(false);
+  const [aiGenPending, setAiGenPending] = useState(false);
+  // Set after a save whose wording changed while a counterpart is linked —
+  // the paired row still holds the older translation (text is never
+  // overwritten automatically; the operator re-translates explicitly).
+  const [translationOutdated, setTranslationOutdated] = useState(false);
+  const [retransPending, setRetransPending] = useState(false);
+
+  // ---- Bilingual pairing ----
+  const [linkParent, setLinkParent] = useState<QuestionDetailDTO | null>(initialLink ?? null);
+  const [showLinkSearch, setShowLinkSearch] = useState(false);
+  const [linkSearch, setLinkSearch] = useState("");
+  const [linkSearching, setLinkSearching] = useState(false);
+  const [linkSearched, setLinkSearched] = useState(false);
+  const [linkResults, setLinkResults] = useState<QuestionListDTO[]>([]);
+  const [pairUnlinked, setPairUnlinked] = useState(false);
+  const appliedInitialLink = useRef(false);
 
   const defaults = useMemo<QuestionFormInput>(() => {
     if (editing) {
@@ -154,6 +194,7 @@ export function QuestionForm({
     handleSubmit,
     control,
     setValue,
+    getValues,
     watch,
     reset,
     setError,
@@ -195,15 +236,21 @@ export function QuestionForm({
   const optionsValues = watch("options");
   const layoutMode = (watch("layout") as McqLayoutMode) ?? "auto";
 
-  // Auto-set Bloom level when Difficulty changes (create mode only)
+  // Auto-set Bloom level when Difficulty changes (create mode only).
+  // Idempotent: it only remaps when the current Bloom level is invalid for
+  // the difficulty, so an inherited (valid) pair survives — including under
+  // StrictMode's double-invoked effects.
   useEffect(() => {
-    if (!editing && difficulty) {
-      const mapping = DIFFICULTY_BLOOM_MAP[difficulty];
-      if (mapping) {
-        setValue("bloomLevel", mapping.default as QuestionFormInput["bloomLevel"], { shouldValidate: true });
-      }
+    if (editing || !difficulty) return;
+    const mapping = DIFFICULTY_BLOOM_MAP[difficulty];
+    if (!mapping) return;
+    const current = getValues("bloomLevel");
+    if (!mapping.levels.includes(current)) {
+      setValue("bloomLevel", mapping.default as QuestionFormInput["bloomLevel"], {
+        shouldValidate: true,
+      });
     }
-  }, [difficulty, editing, setValue]);
+  }, [difficulty, editing, getValues, setValue]);
 
   // Filter Bloom levels based on selected Difficulty
   const availableBloomLevels = useMemo(() => {
@@ -212,15 +259,24 @@ export function QuestionForm({
     return mapping ? mapping.levels : BLOOM_LEVELS;
   }, [difficulty]);
 
-  // Reset class/subject/chapter/topic when medium changes (create mode only)
+  // Reset the taxonomy cascade when it no longer belongs to the selected
+  // medium (e.g. an external medium switch). Idempotent: a link-driven
+  // state that already resolved into the new medium never trips it, so
+  // StrictMode's double-invoked effects are harmless here. User switches
+  // go through the Medium select's onValueChange, which clears inline.
+  const subjectValidForMedium = useMemo(() => {
+    if (editing || !subjectId) return true;
+    return tree.some((c) =>
+      c.children.some((s) => s.id === subjectId && s.medium === medium)
+    );
+  }, [editing, subjectId, tree, medium]);
   useEffect(() => {
-    if (!editing) {
-      setClassIdState("");
-      setValue("subjectId", "");
-      setValue("chapterId", "");
-      setValue("topicId", "");
-    }
-  }, [medium, editing, setValue]);
+    if (subjectValidForMedium) return;
+    setClassIdState("");
+    setValue("subjectId", "");
+    setValue("chapterId", "");
+    setValue("topicId", "");
+  }, [subjectValidForMedium, setValue]);
 
   // ---------- filter tree by medium ----------
   const filteredTree = useMemo(() => {
@@ -250,6 +306,328 @@ export function QuestionForm({
 
   // ---------- submit ----------
   const [serverError, setServerError] = useState<string | null>(null);
+
+  // ---------- bilingual link helpers ----------
+  /**
+   * Adopts `parent` as the bilingual counterpart: flips the medium to its
+   * opposite, inherits chapter/topic/difficulty/Bloom/type/marks, and COPIES
+   * the source content into the form so the operator translates IN PLACE —
+   * manual editing, or one click of "AI Translate to <language>".
+   *
+   * Taxonomy resolves name → subject code → list position (mirroring the
+   * server's resolvePairTaxonomy); any level without a counterpart stays
+   * empty for the operator to pick.
+   */
+  const applyLink = useCallback(
+    (parent: QuestionDetailDTO) => {
+      const targetMedium = parent.medium === "ENGLISH" ? "GUJARATI" : "ENGLISH";
+
+      setValue("medium", targetMedium, { shouldValidate: true });
+      const targetSubjectName = parent.subject?.name ?? "";
+      const parentSubjectCode = parent.subject?.code ?? null;
+      // The source subject node (any medium) gives the parallel chapter/topic
+      // lists for the position fallback.
+      const sourceSubjectNode =
+        tree.flatMap((c) => c.children).find((s) => s.id === parent.subject?.id) ?? null;
+      const subjectMatches = (s: TaxonomyNode) =>
+        s.medium === targetMedium &&
+        (s.name === targetSubjectName ||
+          (!!parentSubjectCode && s.code === parentSubjectCode));
+      const classNode =
+        tree.find((c) =>
+          c.children.some((s) => s.id === parent.subject?.id || subjectMatches(s))
+        ) ?? null;
+      setClassIdState(classNode?.id ?? "");
+      setClassError(null);
+      const targetSubject = classNode?.children.find(subjectMatches) ?? null;
+
+      // Chapter: name → position in the parallel lists (equal counts only —
+      // never silently pair mismatched sequences).
+      let targetChapter =
+        targetSubject?.children.find(
+          (ch) => parent.chapter && ch.name === parent.chapter.name
+        ) ?? null;
+      if (!targetChapter && parent.chapter && sourceSubjectNode && targetSubject) {
+        const srcChapters = sourceSubjectNode.children;
+        const idx = srcChapters.findIndex((ch) => ch.id === parent.chapter!.id);
+        if (idx >= 0 && srcChapters.length === targetSubject.children.length) {
+          targetChapter = targetSubject.children[idx] ?? null;
+        }
+      }
+
+      // Topic: name → position (equal counts only).
+      const parentChapter = parent.chapter;
+      const parentTopicId = parent.topicId;
+      let targetTopic =
+        targetChapter?.children.find(
+          (t) => parent.topicName && t.name === parent.topicName
+        ) ?? null;
+      if (!targetTopic && parentChapter && parentTopicId && targetChapter && sourceSubjectNode) {
+        const sourceChapterNode =
+          sourceSubjectNode.children.find((ch) => ch.id === parentChapter.id) ?? null;
+        const srcTopics = sourceChapterNode?.children ?? [];
+        const idx = srcTopics.findIndex((t) => t.id === parentTopicId);
+        if (idx >= 0 && srcTopics.length === targetChapter.children.length) {
+          targetTopic = targetChapter.children[idx] ?? null;
+        }
+      }
+
+      setValue("subjectId", targetSubject?.id ?? "", { shouldValidate: true });
+      setValue("chapterId", targetChapter?.id ?? "", { shouldValidate: true });
+      setValue("topicId", targetTopic?.id ?? "", { shouldValidate: true });
+      const missing: string[] = [];
+      if (!targetSubject) missing.push(`subject "${targetSubjectName}"`);
+      else if (parent.chapter && !targetChapter)
+        missing.push(`chapter "${parent.chapter.name}"`);
+      else if (parent.topicName && !targetTopic)
+        missing.push(`topic "${parent.topicName}"`);
+      if (missing.length) {
+        toast.warning(
+          `No ${MEDIUM_LABELS[targetMedium]} ${missing.join(
+            ", "
+          )} — select the taxonomy manually.`
+        );
+      }
+      setValue("difficulty", parent.difficulty, { shouldValidate: true });
+      setValue(
+        "bloomLevel",
+        (parent.bloomLevel ??
+          DIFFICULTY_BLOOM_MAP[parent.difficulty]?.default ??
+          "UNDERSTAND") as QuestionFormInput["bloomLevel"],
+        { shouldValidate: true }
+      );
+      setValue("questionType", parent.questionType, { shouldValidate: true });
+      setValue("caseStudyFormat", parent.caseStudyFormat ?? undefined, {
+        shouldValidate: true,
+      });
+      setValue("marks", parent.marks, { shouldValidate: true });
+
+      // Content prefill — the source content becomes the working draft: edit
+      // it in place (manual) or hit "AI Translate to <language>" to have it
+      // filled automatically. Structure (correct flags, pair shape, layout)
+      // carries over; only the words are language-specific.
+      const parentParsed = parseOptions(parent);
+      setValue("questionText", parent.questionText, { shouldValidate: true });
+      setValue("answerKey", parent.answerKey ?? "", { shouldValidate: true });
+      setValue("explanation", parent.explanation ?? "");
+      setValue("tags", parent.tags ?? []);
+      setValue("previousYearTag", parent.previousYearTag ?? "");
+      if (parent.questionType === "MCQ") {
+        if (parentParsed.choices?.length) {
+          setValue(
+            "options",
+            parentParsed.choices.map((o) => ({ ...o })),
+            { shouldValidate: true }
+          );
+          setValue("layout", parseMcqLayout(parent.options));
+        } else {
+          setValue(
+            "options",
+            (getValues("options") ?? []).map((o) => ({ ...o, text: "" }))
+          );
+        }
+      } else if (parent.questionType === "MATCH_THE_FOLLOWING") {
+        if (parentParsed.pairs?.length) {
+          setValue(
+            "matchPairs",
+            parentParsed.pairs.map((p) => ({ ...p })),
+            { shouldValidate: true }
+          );
+        } else {
+          setValue(
+            "matchPairs",
+            (getValues("matchPairs") ?? []).map(() => ({ left: "", right: "" }))
+          );
+        }
+      } else {
+        // Types without options/pairs: clear stale rows left over from a
+        // previously selected type.
+        setValue(
+          "options",
+          (getValues("options") ?? []).map((o) => ({ ...o, text: "" }))
+        );
+        setValue(
+          "matchPairs",
+          (getValues("matchPairs") ?? []).map(() => ({ left: "", right: "" }))
+        );
+      }
+
+      setLinkParent(parent);
+      setShowLinkSearch(false);
+      setLinkResults([]);
+      setLinkSearch("");
+      setLinkSearched(false);
+    },
+    [tree, getValues, setValue]
+  );
+
+  // Deep-link from the bank (?link=<id>) opens the form as its translation.
+  useEffect(() => {
+    if (initialLink && !appliedInitialLink.current) {
+      appliedInitialLink.current = true;
+      applyLink(initialLink);
+    }
+  }, [initialLink, applyLink]);
+
+  async function searchLink() {
+    const term = linkSearch.trim();
+    if (!term) return;
+    setLinkSearching(true);
+    try {
+      const res = await listQuestions({ search: term, pageSize: 6 });
+      setLinkResults(res.items);
+    } catch {
+      toast.error("Could not search questions.");
+      setLinkResults([]);
+    } finally {
+      setLinkSearching(false);
+      setLinkSearched(true);
+    }
+  }
+
+  async function pickLinkResult(row: QuestionListDTO) {
+    setLinkSearching(true);
+    try {
+      const parent = await getQuestionById(row.id);
+      if (!parent) {
+        toast.error("Could not load the selected question.");
+        return;
+      }
+      applyLink(parent);
+      toast.success(
+        `Linked to #${parent.code} — you are now writing the ${
+          MEDIUM_LABELS[parent.medium === "ENGLISH" ? "GUJARATI" : "ENGLISH"]
+        } version.`
+      );
+    } finally {
+      setLinkSearching(false);
+    }
+  }
+
+  function cancelLinkSearch() {
+    setShowLinkSearch(false);
+    setLinkResults([]);
+    setLinkSearched(false);
+    setLinkSearch("");
+  }
+
+  async function handleUnlink() {
+    if (editing) {
+      const res = await unlinkTranslation(editing.id);
+      if (!res.success) {
+        toast.error(res.error ?? "Could not unlink the translation pair.");
+        return;
+      }
+      setPairUnlinked(true);
+      toast.success(res.message ?? "Translation pair unlinked.");
+      router.refresh();
+      return;
+    }
+    // Create mode: drop the link but keep the inherited metadata in the form.
+    setLinkParent(null);
+    cancelLinkSearch();
+  }
+
+  // ---------- AI translate-in-place (create mode, link flow) ----------
+  // Translates the prefilled draft (source content copied by applyLink) into
+  // the form's current medium and fills every language-dependent field. The
+  // operator reviews and saves — the manual flow is simply editing the same
+  // prefilled fields instead.
+  async function aiFillTranslation() {
+    if (!linkParent) return;
+    const values = getValues();
+    const targetLanguage = values.medium === "GUJARATI" ? "Gujarati" : "English";
+    const translatable = TRANSLATABLE_ANSWER_TYPES.includes(values.questionType);
+    setAiFillPending(true);
+    try {
+      const res = await fetch("/api/ai/translate-question", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetLanguage,
+          questionType: values.questionType,
+          questionText: values.questionText,
+          options: values.questionType === "MCQ" ? values.options : undefined,
+          matchPairs:
+            values.questionType === "MATCH_THE_FOLLOWING" ? values.matchPairs : undefined,
+          answerKey: translatable && values.answerKey ? values.answerKey : undefined,
+          explanation: values.explanation || undefined,
+        }),
+      });
+      const body = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        error?: string;
+        translated?: {
+          questionText?: string;
+          options?: MCQOption[];
+          matchPairs?: MatchPair[];
+          answerKey?: string;
+          explanation?: string;
+        };
+      } | null;
+      if (!res.ok || !body?.ok || !body.translated) {
+        toast.error(body?.error ?? "AI translation failed.");
+        return;
+      }
+      const t = body.translated;
+      if (t.questionText) setValue("questionText", t.questionText, { shouldValidate: true });
+      if (values.questionType === "MCQ" && t.options?.length) {
+        setValue("options", t.options, { shouldValidate: true });
+      }
+      if (values.questionType === "MATCH_THE_FOLLOWING" && t.matchPairs?.length) {
+        setValue("matchPairs", t.matchPairs, { shouldValidate: true });
+      }
+      if (t.answerKey && translatable) {
+        setValue("answerKey", t.answerKey, { shouldValidate: true });
+      }
+      if (t.explanation) setValue("explanation", t.explanation);
+      toast.success(`Translated to ${targetLanguage} — review the text, then save.`);
+    } catch {
+      toast.error("AI translation failed. Please try again.");
+    } finally {
+      setAiFillPending(false);
+    }
+  }
+
+  // ---------- AI Generate Translation (edit mode, unlinked question) ----------
+  // Creates the counterpart in the opposite medium in one click: counterpart
+  // taxonomy resolved server-side, content translated, both rows joined
+  // under one translationGroupId. The form refreshes into its linked state.
+  async function aiGenerateCounterpart() {
+    if (!editing) return;
+    setAiGenPending(true);
+    try {
+      const res = await aiCreateCounterpart(editing.id);
+      if (!res.success) {
+        toast.error(res.error ?? "Could not generate the translation.");
+        return;
+      }
+      toast.success(res.message ?? "Translation generated.");
+      router.refresh();
+    } finally {
+      setAiGenPending(false);
+    }
+  }
+
+  // ---------- AI re-translate counterpart (edit mode, linked) ----------
+  // Rewrites ONLY the paired row's language fields from this question.
+  // Language-neutral fields already sync on save (see updateQuestion).
+  async function handleRetranslate() {
+    if (!editing) return;
+    setRetransPending(true);
+    try {
+      const res = await retranslateCounterpart(editing.id);
+      if (!res.success) {
+        toast.error(res.error ?? "Could not re-translate the counterpart.");
+        return;
+      }
+      setTranslationOutdated(false);
+      toast.success(res.message ?? "Counterpart re-translated.");
+      router.refresh();
+    } finally {
+      setRetransPending(false);
+    }
+  }
 
   // Topic + answer are required in the form even though the shared schema
   // keeps them optional (bulk import / legacy rows rely on that).
@@ -289,7 +667,31 @@ export function QuestionForm({
     }
 
     const fd = new FormData();
-    fd.set("payload", JSON.stringify(values));
+
+    // ✨ Auto-Translate & Save Both Languages — translate + persist both
+    // halves of a fresh pair in one server round-trip (create mode only).
+    if (!editing && submitModeRef.current === "autoTranslate") {
+      setAutoPending(true);
+      try {
+        fd.set("payload", JSON.stringify({ ...values, linkQuestionId: "" }));
+        const res = await autoTranslateCreatePair(null, fd);
+        if (!res.success) {
+          setServerError(res.error);
+          toast.error(res.error ?? "Could not save the translation pair.");
+          return;
+        }
+        toast.success(res.message ?? "Saved both languages.");
+        router.push("/dashboard/questions");
+      } finally {
+        setAutoPending(false);
+      }
+      return;
+    }
+
+    fd.set(
+      "payload",
+      JSON.stringify({ ...values, linkQuestionId: linkParent?.id ?? "" })
+    );
     const res = editing ? await updateQuestion(editing.id, null, fd) : await createQuestion(null, fd);
     if (!res.success) {
       setServerError(res.error);
@@ -297,12 +699,31 @@ export function QuestionForm({
       return;
     }
 
+    // "Link — Manual Translation" (edit mode): persist first, then reopen the
+    // create form deep-linked to this question as the translation parent —
+    // taxonomy + content are prefilled there for in-place translating.
+    if (editing && submitModeRef.current === "saveLink") {
+      toast.success(res.message ?? "Saved — now write the translation.");
+      router.push(`/dashboard/questions/new?link=${editing.id}`);
+      return;
+    }
+
     // Save & New → keep the page, reset everything
     if (!editing && submitModeRef.current === "saveNew") {
       reset();
       setClassIdState("");
+      setLinkParent(null);
+      cancelLinkSearch();
       toast.success("Saved. Ready for the next question.");
       onSaved?.();
+      return;
+    }
+
+    if (editing) {
+      // Stay on the edit page: the linked counterpart may now hold outdated
+      // text — the chip under the pair status offers an explicit re-translate.
+      setTranslationOutdated(!!res.translationOutdated);
+      toast.success(res.message ?? "Question saved");
       return;
     }
 
@@ -346,6 +767,7 @@ export function QuestionForm({
         <Select
           items={MEDIUMS.map((m) => ({ value: m, label: MEDIUM_LABELS[m] }))}
           value={medium}
+          disabled={!!linkParent}
           onValueChange={(v) => {
             if (v) {
               setValue("medium", v as QuestionFormInput["medium"], { shouldValidate: true });
@@ -369,6 +791,236 @@ export function QuestionForm({
         </Select>
         {errors.medium && <p className="text-xs text-red-400">{errors.medium.message}</p>}
       </div>
+
+      {/* Bilingual pairing (create mode) */}
+      {!editing && (
+        <div className="space-y-2 rounded-lg border border-border/60 bg-card/40 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Languages className="h-4 w-4 text-primary" aria-hidden />
+              <span className="font-[Nunito] text-sm font-medium text-foreground">
+                Bilingual Translation
+              </span>
+              {linkParent && (
+                <Badge
+                  variant="outline"
+                  className="border-emerald-500/40 text-[10px] text-emerald-400"
+                >
+                  EN/GUJ Linked
+                </Badge>
+              )}
+            </div>
+            {!linkParent && !showLinkSearch && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setShowLinkSearch(true)}
+              >
+                <Search className="mr-1 h-3.5 w-3.5" />
+                Link to Existing Question
+              </Button>
+            )}
+          </div>
+
+          {linkParent ? (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+                <span>
+                  Linked to <span className="font-mono font-semibold">#{linkParent.code}</span>{" "}
+                  ({MEDIUM_LABELS[linkParent.medium]})
+                </span>
+                <span className="line-clamp-1 min-w-0 flex-1 text-muted-foreground">
+                  {linkParent.questionText}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs"
+                  onClick={() => void handleUnlink()}
+                >
+                  Unlink
+                </Button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <LoadingButton
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  loading={aiFillPending}
+                  loadingText="Translating…"
+                  disabled={isSubmitting}
+                  onClick={() => void aiFillTranslation()}
+                  className="border-zinc-800 bg-zinc-950 text-zinc-100 shadow-sm hover:bg-zinc-900 hover:text-zinc-100"
+                >
+                  <Sparkles className="mr-1 h-3.5 w-3.5" />
+                  AI Translate to {MEDIUM_LABELS[medium]}
+                </LoadingButton>
+                <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+                  Content is prefilled from #{linkParent.code} — edit it in place (manual) or let
+                  AI fill the {MEDIUM_LABELS[medium]} text, then save.
+                </p>
+              </div>
+            </div>
+          ) : showLinkSearch ? (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <Input
+                  value={linkSearch}
+                  onChange={(e) => setLinkSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void searchLink();
+                    }
+                  }}
+                  placeholder="Search by code (#506892) or question text"
+                  className="bg-slate-950"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void searchLink()}
+                  disabled={linkSearching}
+                >
+                  {linkSearching ? "Searching…" : "Search"}
+                </Button>
+                <Button type="button" size="sm" variant="ghost" onClick={cancelLinkSearch}>
+                  Cancel
+                </Button>
+              </div>
+              {linkResults.length > 0 && (
+                <div className="max-h-44 divide-y divide-border/60 overflow-y-auto rounded-md border border-border/60">
+                  {linkResults.map((r) => (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() => void pickLinkResult(r)}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-muted/60"
+                    >
+                      <span className="font-mono text-muted-foreground">#{r.code}</span>
+                      <Badge variant="secondary" className="shrink-0 text-[10px]">
+                        {MEDIUM_LABELS[r.medium] ?? r.medium}
+                      </Badge>
+                      <span className="line-clamp-1 text-muted-foreground">
+                        {r.questionText}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {linkSearched && linkResults.length === 0 && (
+                <p className="text-xs text-muted-foreground">No matching questions found.</p>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Link the same question in the other language — chapter, topic, difficulty, Bloom
+              level, type and marks are inherited from the linked question, the medium switches
+              to its opposite, and its content is prefilled here for you to translate manually or
+              with one click of AI. Both versions can then be swapped on any paper.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Bilingual pair status (edit mode) */}
+      {editing && editing.linked && !pairUnlinked && (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+            <Languages className="h-4 w-4 shrink-0" aria-hidden />
+            <Badge variant="outline" className="border-emerald-500/40 text-[10px] text-emerald-400">
+              EN/GUJ Linked
+            </Badge>
+            <span className="min-w-0 flex-1 text-muted-foreground">
+              Part of a bilingual pair — the medium is locked while linked. Marks, difficulty and
+              the correct answer stay in sync automatically.
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={() => void handleUnlink()}
+            >
+              Unlink
+            </Button>
+          </div>
+          {translationOutdated && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+              <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
+              <span className="min-w-0 flex-1 text-muted-foreground">
+                The linked counterpart still holds the previous wording — text is never
+                overwritten automatically.
+              </span>
+              <LoadingButton
+                type="button"
+                size="sm"
+                variant="outline"
+                loading={retransPending}
+                loadingText="Translating…"
+                disabled={isSubmitting}
+                onClick={() => void handleRetranslate()}
+              >
+                <Sparkles className="mr-1 h-3.5 w-3.5" />
+                Re-translate counterpart
+              </LoadingButton>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Bilingual pairing options (edit mode, not yet linked) */}
+      {editing && !editing.linked && (
+        <div className="space-y-2 rounded-lg border border-border/60 bg-card/40 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Languages className="h-4 w-4 text-primary" aria-hidden />
+              <span className="font-[Nunito] text-sm font-medium text-foreground">
+                Bilingual Translation
+              </span>
+              <Badge variant="outline" className="border-amber-500/40 text-[10px] text-amber-400">
+                Not linked
+              </Badge>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={isSubmitting}
+                onClick={() => {
+                  submitModeRef.current = "saveLink";
+                  void onSubmit();
+                }}
+              >
+                <Search className="mr-1 h-3.5 w-3.5" />
+                Link — Manual Translation
+              </Button>
+              <LoadingButton
+                type="button"
+                variant="outline"
+                size="sm"
+                loading={aiGenPending}
+                loadingText="Translating…"
+                disabled={isSubmitting}
+                onClick={() => void aiGenerateCounterpart()}
+                className="border-zinc-800 bg-zinc-950 text-zinc-100 shadow-sm hover:bg-zinc-900 hover:text-zinc-100"
+              >
+                <Sparkles className="mr-1 h-3.5 w-3.5" />
+                AI Generate Translation
+              </LoadingButton>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            No {MEDIUM_LABELS[editing.medium === "ENGLISH" ? "GUJARATI" : "ENGLISH"]}{" "}
+            counterpart yet — pair it manually (saves, then opens a prefilled translation form) or
+            let AI create the {MEDIUM_LABELS[editing.medium === "ENGLISH" ? "GUJARATI" : "ENGLISH"]}{" "}
+            version now, with the matching chapter/topic in its medium.
+          </p>
+        </div>
+      )}
 
       {/* Taxonomy cascade */}
       <div className="grid grid-cols-2 gap-3">
@@ -890,6 +1542,23 @@ export function QuestionForm({
         <Button type="button" variant="outline" onClick={() => router.push("/dashboard/questions")}>
           Cancel
         </Button>
+        {!editing && !linkParent && (
+          <LoadingButton
+            type="button"
+            variant="outline"
+            loading={autoPending}
+            loadingText="Translating…"
+            disabled={isSubmitting}
+            onClick={() => {
+              submitModeRef.current = "autoTranslate";
+              void onSubmit();
+            }}
+            className="border-zinc-800 bg-zinc-950 text-zinc-100 shadow-sm hover:bg-zinc-900 hover:text-zinc-100"
+          >
+            <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+            Auto-Translate &amp; Save Both Languages
+          </LoadingButton>
+        )}
         {!editing && (
           <Button
             type="submit"

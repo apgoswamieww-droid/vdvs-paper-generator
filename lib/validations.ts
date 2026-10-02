@@ -100,6 +100,10 @@ export const questionBaseSchema = z.object({
     )
     .default([]),
   previousYearTag: z.string().trim().max(60).optional().or(z.literal("")),
+  // Bilingual pairing (create-time only): the id of the question to link to,
+  // and/or a directly-assigned translation group. Empty string = unlinked.
+  linkQuestionId: z.string().trim().max(64).optional().or(z.literal("")),
+  translationGroupId: z.string().trim().max(64).optional().or(z.literal("")),
 });
 
 export const questionFormSchema = z
@@ -170,7 +174,13 @@ export type QuestionFilterInput = z.infer<typeof questionFilterSchema>;
 //  Server Action result wrapper
 // ------------------------------------------------------------
 export type ActionState =
-  | { success: true; message?: string; id?: string }
+  | {
+      success: true;
+      message?: string;
+      id?: string;
+      /** Edit saved text whose linked counterpart now holds older wording. */
+      translationOutdated?: boolean;
+    }
   | { success: false; error: string; fieldErrors?: Record<string, string> };
 
 // ============================================================

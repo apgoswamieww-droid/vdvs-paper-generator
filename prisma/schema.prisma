@@ -432,6 +432,12 @@ model Question {
   caseStudyFormat CaseStudyFormat? // for CASE_STUDY questions
   previousYearTag String? // e.g., "GSEB 2023", "Board 2024"
 
+  // Bilingual pairing — the English & Gujarati versions of the same
+  // conceptual question share a translationGroupId (seeded with the id of
+  // whichever question was created first). Lets the paper engine swap one
+  // medium for the other while keeping order, marks and structure.
+  translationGroupId String?
+
   // Many-to-many with Papers via join table
   paperSections PaperSectionQuestion[]
   answers       Answer[]
@@ -443,6 +449,7 @@ model Question {
   @@index([previousYearTag])
   @@index([assignedTeacherId])
   @@index([status, createdByAi])
+  @@index([translationGroupId])
   @@map("questions")
 }
 
