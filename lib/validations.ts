@@ -107,6 +107,7 @@ export const questionFormSchema = z
     questionBaseSchema.extend({
       questionType: z.literal("MCQ"),
       options: z.array(mcqOptionSchema).min(2, "At least 2 options").max(6),
+      layout: z.enum(["auto", "one-row", "grid2", "stacked"]).optional().default("auto"),
     }),
     questionBaseSchema.extend({
       questionType: z.literal("MATCH_THE_FOLLOWING"),
@@ -249,13 +250,77 @@ export const headerDividerRowSchema = z.object({
   color: headerColorSchema,
 });
 
+export const headerMetaGridRowSchema = z.object({
+  id: z.string().min(1),
+  type: z.literal("metaGrid"),
+  section: z.string().max(80),
+  showSection: z.boolean(),
+  showClass: z.boolean(),
+  showDate: z.boolean(),
+  showDuration: z.boolean(),
+  showTotalMarks: z.boolean(),
+  showSubject: z.boolean(),
+  color: headerColorSchema,
+});
+
 export const paperHeaderRowSchema = z.discriminatedUnion("type", [
   headerCellsRowSchema,
   headerDividerRowSchema,
+  headerMetaGridRowSchema,
 ]);
+
+// --- Canvas header (v2) — the visual designer layout ---
+// Mirrors HeaderBlock / HeaderCanvasLayout / CANVAS_LIMITS in lib/paper-header.ts.
+export const headerBlockBaseSchema = z.object({
+  id: z.string().min(1),
+  x: z.number().min(0).max(100),
+  y: z.number().min(0).max(100),
+  w: z.number().min(5).max(100),
+  align: headerAlignSchema,
+  visible: z.boolean(),
+});
+
+export const headerBrandingBlockSchema = headerBlockBaseSchema.extend({
+  kind: z.literal("branding"),
+  logoHeight: z.number().min(16).max(200),
+  showContact: z.boolean(),
+});
+
+export const headerIdentityBlockSchema = headerBlockBaseSchema.extend({
+  kind: z.literal("identity"),
+  nameText: z.string().max(300),
+  addressText: z.string().max(500),
+  fontSize: z.number().min(6).max(48),
+  color: headerColorSchema,
+});
+
+export const headerMetaGridBlockSchema = headerBlockBaseSchema.extend({
+  kind: z.literal("metaGrid"),
+  section: z.string().max(80),
+  showSection: z.boolean(),
+  showClass: z.boolean(),
+  showDate: z.boolean(),
+  showDuration: z.boolean(),
+  showTotalMarks: z.boolean(),
+  showSubject: z.boolean(),
+  color: headerColorSchema,
+});
+
+export const headerBlockSchema = z.discriminatedUnion("kind", [
+  headerBrandingBlockSchema,
+  headerIdentityBlockSchema,
+  headerMetaGridBlockSchema,
+]);
+
+export const headerCanvasSchema = z.object({
+  version: z.literal(2),
+  height: z.number().min(80).max(480),
+  blocks: z.array(headerBlockSchema).max(8),
+});
 
 export const headerConfigSchema = z.object({
   rows: z.array(paperHeaderRowSchema).max(14),
+  canvas: headerCanvasSchema.optional(),
 });
 
 export type HeaderConfigValue = z.output<typeof headerConfigSchema>;
@@ -277,6 +342,7 @@ export const pageConfigSchema = z.object({
   lineHeight: z.coerce.number().min(1.1).max(2.2),
   showPageNumbers: z.boolean(),
   answerKeyOnNewPage: z.boolean(),
+  columns: z.union([z.literal(1), z.literal(2)]).optional(),
 });
 
 export type PageConfigValue = z.output<typeof pageConfigSchema>;
@@ -291,7 +357,6 @@ export const createManualPaperSchema = z.object({
   passingMarks: z.coerce.number().min(0).max(10000).optional().or(z.literal("")),
   instructions: z.string().trim().max(5000).optional().or(z.literal("")),
   schoolHeader: z.string().trim().max(500).optional().or(z.literal("")),
-  headerConfig: headerConfigSchema.optional(),
   pageConfig: pageConfigSchema.optional(),
   watermarkText: z.string().trim().max(100).optional().or(z.literal("")),
   generationMode: z.literal("MANUAL"),
@@ -316,7 +381,6 @@ export const createBlueprintPaperSchema = z.object({
   passingMarks: z.coerce.number().min(0).max(10000).optional().or(z.literal("")),
   instructions: z.string().trim().max(5000).optional().or(z.literal("")),
   schoolHeader: z.string().trim().max(500).optional().or(z.literal("")),
-  headerConfig: headerConfigSchema.optional(),
   pageConfig: pageConfigSchema.optional(),
   watermarkText: z.string().trim().max(100).optional().or(z.literal("")),
   generationMode: z.literal("BLUEPRINT"),
@@ -335,7 +399,6 @@ export const updatePaperSchema = z.object({
   passingMarks: z.coerce.number().min(0).max(10000).optional().or(z.literal("")),
   instructions: z.string().trim().max(5000).optional().or(z.literal("")),
   schoolHeader: z.string().trim().max(500).optional().or(z.literal("")),
-  headerConfig: headerConfigSchema.optional(),
   pageConfig: pageConfigSchema.optional(),
   watermarkText: z.string().trim().max(100).optional().or(z.literal("")),
   status: z.enum(["DRAFT", "PUBLISHED", "ARCHIVED"]).optional(),

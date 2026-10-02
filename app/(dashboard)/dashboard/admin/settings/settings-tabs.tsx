@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -13,6 +13,12 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ShieldAlert, Upload, X, Save } from "lucide-react";
 import type { PlanTier } from "@/types";
 import { updateSchoolSettings } from "./actions";
+import { HeaderBuilderCanvas } from "@/components/paper/header-builder-canvas";
+import {
+  buildHeaderContext,
+  defaultCanvasFromSchool,
+  type HeaderConfig,
+} from "@/lib/paper-header";
 
 export type SchoolSettingsValue = {
   name: string;
@@ -26,6 +32,7 @@ export type SchoolSettingsValue = {
   mediums: ("ENGLISH" | "GUJARATI")[];
   defaultInstructions: string;
   watermarkText: string;
+  headerConfig: HeaderConfig | null;
   allowSelfRegistration: boolean;
   teacherCanEdit: boolean;
   planTier: PlanTier;
@@ -70,6 +77,34 @@ export function SettingsTabs({
     defaultInstructions: school.defaultInstructions,
     watermarkText: school.watermarkText,
   });
+  // Tab 3b — reusable school header design (visual canvas)
+  const schoolProfile = {
+    name: school.name,
+    logoUrl: school.logoUrl || null,
+    address: school.address || null,
+    phone: school.phone || null,
+    board: school.board,
+    academicYear: school.academicYear || null,
+  };
+  const initialHeader: HeaderConfig = school.headerConfig ?? {
+    rows: [],
+    canvas: defaultCanvasFromSchool(schoolProfile),
+  };
+  const [headerConfig, setHeaderConfig] = useState<HeaderConfig>(initialHeader);
+  const headerContext = useMemo(
+    () =>
+      buildHeaderContext({
+        paperTitle: "",
+        date: null,
+        className: "",
+        subjectName: "",
+        totalMarks: 0,
+        duration: null,
+        school: schoolProfile,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
   // Tab 4 — Permissions & Security
   const [perms, setPerms] = useState({
     allowSelfRegistration: school.allowSelfRegistration,
@@ -144,7 +179,7 @@ export function SettingsTabs({
 
   async function savePapers(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    await save("papers", papers);
+    await save("papers", { ...papers, headerConfig });
   }
 
   async function savePermissions(e: React.FormEvent<HTMLFormElement>) {
@@ -382,6 +417,23 @@ export function SettingsTabs({
                     maxLength={100}
                   />
                   <p className="text-[11px] text-muted-foreground">Repeated diagonally across every page of the PDF.</p>
+                </div>
+
+                <div className="space-y-2 border-t border-border/50 pt-4">
+                  <div>
+                    <Label>Default Header Design</Label>
+                    <p className="text-[11px] text-muted-foreground">
+                      New papers start from this layout. Drag blocks, resize them and pick a preview — then save.
+                    </p>
+                  </div>
+                  <HeaderBuilderCanvas
+                    value={headerConfig}
+                    onChange={setHeaderConfig}
+                    context={headerContext}
+                    logoUrl={schoolProfile.logoUrl}
+                    schoolDefault={initialHeader}
+                    schoolProfile={schoolProfile}
+                  />
                 </div>
 
                 <div className="flex items-center justify-end gap-3 border-t border-border/50 pt-4">

@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { useConfirm } from "@/components/shared";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -42,9 +43,12 @@ import {
   Copy,
   Check,
   Users,
+  Upload,
 } from "lucide-react";
+import { formatDateISO } from "@/lib/utils";
 import { createUser, deleteUser, resetUserPassword, updateUser } from "./actions";
-import type { AdminUserRow } from "./page";
+import { ImportStudentsDialog } from "./import-students-dialog";
+import type { AdminUserRow, SubjectOption } from "./page";
 
 type ClassOption = { id: string; name: string };
 
@@ -52,6 +56,12 @@ const ROLE_LABELS: Record<string, string> = {
   TEACHER: "Teacher",
   STUDENT: "Student",
 };
+
+const STATUS_STYLE = {
+  completed: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+  failed: "border-rose-500/30 bg-rose-500/10 text-rose-400",
+  partial: "border-amber-500/30 bg-amber-500/10 text-amber-400",
+} as const;
 
 function RolePill({ role }: { role: string }) {
   const isTeacher = role === "TEACHER";
@@ -68,20 +78,97 @@ function RolePill({ role }: { role: string }) {
   );
 }
 
-const EMPTY_FORM = { name: "", email: "", password: "", role: "STUDENT", classLevelId: "" };
+const EMPTY_FORM = {
+  name: "",
+  email: "",
+  password: "",
+  role: "STUDENT",
+  classLevelId: "",
+  subjectIds: [] as string[],
+};
+
+function SubjectPicker({
+  options,
+  value,
+  onChange,
+}: {
+  options: SubjectOption[];
+  value: string[];
+  onChange: (subjectIds: string[]) => void;
+}) {
+  const grouped = useMemo(() => {
+    const map = new Map<string, SubjectOption[]>();
+    for (const o of options) {
+      const list = map.get(o.className) ?? [];
+      list.push(o);
+      map.set(o.className, list);
+    }
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [options]);
+
+  return (
+    <div className="max-h-52 space-y-3 overflow-y-auto rounded-lg border border-slate-800 p-3">
+      {grouped.length === 0 && (
+        <p className="text-xs text-muted-foreground">
+          No subjects set up yet — add subjects under Classes first.
+        </p>
+      )}
+      {grouped.map(([className, subs]) => (
+        <div key={className}>
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            {className}
+          </p>
+          <div className="space-y-1.5">
+            {subs.map((s) => {
+              const checked = value.includes(s.id);
+              return (
+                <label key={s.id} className="flex cursor-pointer items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() =>
+                      onChange(checked ? value.filter((v) => v !== s.id) : [...value, s.id])
+                    }
+                    className="size-4 accent-blue-600"
+                  />
+                  {s.name}
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export type ImportHistoryRow = {
+  id: string;
+  fileName: string;
+  kind: "QUESTION" | "STUDENT";
+  status: "PENDING" | "PARTIAL" | "COMPLETED" | "FAILED";
+  totalCount: number;
+  successCount: number;
+  failedCount: number;
+  createdAt: string;
+};
 
 export function UsersClient({
   users,
   classes,
+  subjects,
   schoolName,
   isAudit,
   auditSchoolId,
+  importHistory,
 }: {
   users: AdminUserRow[];
   classes: ClassOption[];
+  subjects: SubjectOption[];
   schoolName: string;
   isAudit: boolean;
   auditSchoolId: string;
+  importHistory: ImportHistoryRow[];
 }) {
   const router = useRouter();
   const { confirm, confirmElement, confirmReset } = useConfirm();
@@ -93,6 +180,9 @@ export function UsersClient({
   const [addOpen, setAddOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
+
+  // Bulk import dialog
+  const [importOpen, setImportOpen] = useState(false);
 
   // Edit dialog
   const [editOpen, setEditOpen] = useState(false);
@@ -138,6 +228,7 @@ export function UsersClient({
       password: form.password,
       role: form.role,
       classLevelId: form.role === "STUDENT" ? form.classLevelId || null : null,
+      subjectIds: form.role === "TEACHER" ? form.subjectIds : [],
       schoolId: isAudit ? auditSchoolId : undefined,
     });
     setSubmitting(false);
@@ -159,6 +250,7 @@ export function UsersClient({
       password: "",
       role: u.role,
       classLevelId: classes.find((c) => c.name === u.className)?.id ?? "",
+      subjectIds: u.subjectIds,
     });
     setEditOpen(true);
   }
@@ -173,6 +265,7 @@ export function UsersClient({
       email: editForm.email,
       role: editForm.role,
       classLevelId: editForm.role === "STUDENT" ? editForm.classLevelId || null : null,
+      subjectIds: editForm.role === "TEACHER" ? editForm.subjectIds : [],
       schoolId: isAudit ? auditSchoolId : undefined,
     });
     setSubmitting(false);
@@ -248,10 +341,22 @@ export function UsersClient({
             Teachers and students belonging to {schoolName}.
           </p>
         </div>
-        <Button className="gap-2 font-[Nunito]" onClick={() => { resetForm(); setAddOpen(true); }}>
-          <Plus className="h-4 w-4" />
-          Add User
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            className="gap-2 font-[Nunito]"
+            onClick={() => setImportOpen(true)}
+            disabled={isAudit}
+            title={isAudit ? "Not available in audit mode" : "Bulk import students from Excel"}
+          >
+            <Upload className="h-4 w-4" />
+            Import Students
+          </Button>
+          <Button className="gap-2 font-[Nunito]" onClick={() => { resetForm(); setAddOpen(true); }}>
+            <Plus className="h-4 w-4" />
+            Add User
+          </Button>
+        </div>
       </div>
 
       {isAudit && (
@@ -334,7 +439,11 @@ export function UsersClient({
                       <RolePill role={u.role} />
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
-                      {u.role === "STUDENT" ? (u.className ?? "—") : "—"}
+                      {u.role === "STUDENT"
+                        ? (u.className ?? "—")
+                        : u.subjectNames.length > 0
+                          ? u.subjectNames.join(", ")
+                          : "—"}
                     </TableCell>
                     <TableCell>
                       {u.isActive ? (
@@ -374,6 +483,56 @@ export function UsersClient({
           </div>
         </CardContent>
       </Card>
+
+      {/* ── Bulk import students dialog ── */}
+      <ImportStudentsDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        schoolName={schoolName}
+      />
+
+      {/* ── Import history (questions + students) ── */}
+      {importHistory.length > 0 && !isAudit && (
+        <Card className="border-border/50">
+          <CardHeader className="pb-3">
+            <CardTitle className="font-[Rasa] text-lg font-semibold">Import History</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <div className="divide-y divide-border/60">
+              {importHistory.map((h) => (
+                <div key={h.id} className="flex flex-wrap items-center gap-2 py-2 text-sm first:pt-0 last:pb-0">
+                  <Badge
+                    variant="outline"
+                    className={`shrink-0 text-[10px] ${
+                      h.kind === "STUDENT"
+                        ? "border-sky-500/30 bg-sky-500/10 text-sky-400"
+                        : "border-violet-500/30 bg-violet-500/10 text-violet-400"
+                    }`}
+                  >
+                    {h.kind === "STUDENT" ? "Students" : "Questions"}
+                  </Badge>
+                  <span className="min-w-0 flex-1 truncate">{h.fileName}</span>
+                  <Badge
+                    variant="outline"
+                    className={`shrink-0 text-[10px] ${
+                      h.status === "COMPLETED"
+                        ? STATUS_STYLE.completed
+                        : h.status === "FAILED"
+                          ? STATUS_STYLE.failed
+                          : STATUS_STYLE.partial
+                    }`}
+                  >
+                    {h.status}
+                  </Badge>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {h.successCount}/{h.totalCount} · {formatDateISO(h.createdAt)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── Add User dialog ── */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
@@ -420,6 +579,19 @@ export function UsersClient({
                 </Select>
               </div>
             </div>
+            {form.role === "TEACHER" && (
+              <div className="space-y-1.5">
+                <Label>Subjects to teach</Label>
+                <SubjectPicker
+                  options={subjects}
+                  value={form.subjectIds}
+                  onChange={(ids) => setForm({ ...form, subjectIds: ids })}
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Teachers see only question-bank questions in these subjects.
+                </p>
+              </div>
+            )}
             {form.role === "STUDENT" && (
               <div className="space-y-1.5">
                 <Label>Class / Section (optional)</Label>
@@ -488,6 +660,19 @@ export function UsersClient({
                 </SelectContent>
               </Select>
             </div>
+            {editForm.role === "TEACHER" && (
+              <div className="space-y-1.5">
+                <Label>Subjects to teach</Label>
+                <SubjectPicker
+                  options={subjects}
+                  value={editForm.subjectIds}
+                  onChange={(ids) => setEditForm({ ...editForm, subjectIds: ids })}
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Teachers see only question-bank questions in these subjects.
+                </p>
+              </div>
+            )}
             {editForm.role === "STUDENT" && (
               <div className="space-y-1.5">
                 <Label>Class / Section (optional)</Label>

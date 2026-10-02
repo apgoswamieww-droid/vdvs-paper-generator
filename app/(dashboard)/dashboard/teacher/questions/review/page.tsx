@@ -58,7 +58,7 @@ export default async function TeacherReviewQueuePage() {
         schoolId: session.schoolId,
         createdByAi: true,
         status: "PENDING",
-        OR: [{ assignedTeacherId: session.id }, { assignedTeacherId: null }],
+        assignedTeacherId: session.id,
       },
       orderBy: { createdAt: "asc" },
       select: questionSelect,

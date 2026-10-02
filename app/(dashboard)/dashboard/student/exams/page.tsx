@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { formatDateTimeUTC } from "@/lib/utils";
 import { listStudentAssignments, startExam, type StudentAssignmentDTO } from "../actions";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -107,7 +108,7 @@ export default function ExamsPage() {
                         {a.totalMarks}
                       </TableCell>
                       <TableCell className="font-[Nunito] text-muted-foreground text-xs">
-                        {new Date(a.endTime).toLocaleString()}
+                        {formatDateTimeUTC(a.endTime)}
                       </TableCell>
                       <TableCell>
                         {(canStart || canResume) && (

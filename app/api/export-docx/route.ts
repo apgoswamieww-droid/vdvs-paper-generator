@@ -5,21 +5,46 @@ import { normalizePageConfig, pageDimensions, type PageConfig } from "@/lib/pape
 import { imagePixelSize, type DocxImage } from "@/lib/docx";
 import { buildPaperDocx, type DocxLogo } from "@/lib/paper-docx";
 import { normalizeHeaderConfig } from "@/lib/paper-header";
+import {
+  documentFileSuffix,
+  isPaperDocumentType,
+  type PaperDocumentType,
+} from "@/lib/paper-document";
 
 // ============================================================
 //  POST /api/export-docx
-//  Body: { paperId: string, includeAnswerKey?: boolean, pageOverrides?: PageConfig }
+//  Body: { paperId: string, documentType?: "paper" | "answer-key" | "solution" | "omr",
+//          includeAnswerKey?: boolean, pageOverrides?: PageConfig }
 //
-//  Renders the same paper as a Word (.docx) file, honoring the
-//  saved header config and page setup. No third-party dependency —
-//  the OOXML package is assembled in lib/docx.ts.
+//  Renders the requested document (paper, answer key or solution)
+//  as a Word (.docx) file, honoring the saved header config and
+//  page setup. No third-party dependency — the OOXML package is
+//  assembled in lib/docx.ts.
 // ============================================================
 
 export async function POST(request: NextRequest) {
   try {
     const session = await requireSession();
     const body = await request.json();
-    const { paperId, includeAnswerKey = false, pageOverrides } = body;
+    const {
+      paperId,
+      includeAnswerKey = false,
+      pageOverrides,
+      documentType: rawDocumentType,
+    } = body;
+    const documentType: PaperDocumentType = isPaperDocumentType(rawDocumentType)
+      ? rawDocumentType
+      : "paper";
+
+    // The OMR sheet's layout depends on exact print geometry (registration
+    // marks, fixed bubble columns) and only ships as a PDF; the export dialog
+    // disables the Word option for it. Guard the route too.
+    if (documentType === "omr") {
+      return NextResponse.json(
+        { error: "OMR sheet exports as PDF only." },
+        { status: 400 }
+      );
+    }
 
     if (!paperId) {
       return NextResponse.json({ error: "paperId is required" }, { status: 400 });
@@ -33,7 +58,6 @@ export async function POST(request: NextRequest) {
         totalMarks: true,
         duration: true,
         instructions: true,
-        headerConfig: true,
         pageConfig: true,
         createdAt: true,
         subject: {
@@ -47,6 +71,7 @@ export async function POST(request: NextRequest) {
             phone: true,
             board: true,
             academicYear: true,
+            headerConfig: true,
           },
         },
         sections: {
@@ -82,13 +107,16 @@ export async function POST(request: NextRequest) {
 
     const pageConfig: PageConfig = normalizePageConfig(pageOverrides ?? paper.pageConfig);
 
+    // The header design now comes from the school (single source of truth).
+    const headerConfig = paper.school?.headerConfig ?? null;
+
     // Best-effort: embed the school logo, but only when the header shows one
     // (avoids fetching an image that would never be rendered).
-    const hasLogoRow = normalizeHeaderConfig(paper.headerConfig).rows.some(
+    const hasLogoRow = normalizeHeaderConfig(headerConfig).rows.some(
       (row) => row.type === "cells" && row.cells.some((c) => c.content.type === "logo")
     );
     const logo = hasLogoRow
-      ? await resolveLogo(paper.school?.logoUrl ?? null, paper.headerConfig, pageConfig)
+      ? await resolveLogo(paper.school?.logoUrl ?? null, headerConfig, pageConfig)
       : null;
 
     const docx = buildPaperDocx(
@@ -97,21 +125,23 @@ export async function POST(request: NextRequest) {
         totalMarks: paper.totalMarks,
         duration: paper.duration,
         instructions: paper.instructions,
-        headerConfig: paper.headerConfig,
+        headerConfig,
         createdAt: paper.createdAt,
         subject: paper.subject,
         school: paper.school,
         sections: paper.sections,
       },
-      { includeAnswerKey, pageConfig, logo }
+      { includeAnswerKey, pageConfig, logo, documentType }
     );
+
+    const baseName = paper.title.replace(/[^a-zA-Z0-9]/g, "_") || "paper";
 
     return new Response(new Uint8Array(docx), {
       status: 200,
       headers: {
         "Content-Type":
           "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Content-Disposition": `attachment; filename="${paper.title.replace(/[^a-zA-Z0-9]/g, "_")}.docx"`,
+        "Content-Disposition": `attachment; filename="${baseName}${documentFileSuffix(documentType)}.docx"`,
       },
     });
   } catch (error) {

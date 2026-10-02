@@ -4,11 +4,21 @@ import { PrismaAdapter } from "@auth/prisma-adapter";
 import bcrypt from "bcryptjs";
 import prisma from "@/lib/prisma";
 
-export const {
+// Augment the session so the forced-password-reset flag can travel through
+// unstable_update() when the user sets their own password.
+declare module "next-auth" {
+  interface Session {
+    mustChangePassword?: boolean;
+  }
+}
+
+const {
   handlers,
   signIn,
   signOut,
   auth,
+  // Server-side session refresh (e.g. clearing mustChangePassword).
+  unstable_update,
 } = NextAuth({
   adapter: PrismaAdapter(prisma),
   session: { strategy: "jwt" },
@@ -43,26 +53,45 @@ export const {
           email: user.email,
           role: user.role,
           schoolId: user.schoolId,
+          // Bulk-imported students must set their own password first.
+          mustChangePassword: user.mustChangePassword,
         };
       },
     }),
   ],
   callbacks: {
     async jwt({ token, user, trigger, session }) {
-      const extra = user as { role?: string | null; schoolId?: string | null } | null;
+      const extra = user as {
+        role?: string | null;
+        schoolId?: string | null;
+        mustChangePassword?: boolean | null;
+      } | null;
       if (extra?.role) token.role = extra.role;
       if (extra?.schoolId) token.schoolId = extra.schoolId;
-      if (trigger === "update" && session?.name) {
-        token.name = session.name;
+      if (extra && typeof extra.mustChangePassword === "boolean") {
+        token.mustChangePassword = extra.mustChangePassword;
+      }
+      if (trigger === "update" && session) {
+        const s = session as { name?: string | null; mustChangePassword?: boolean | null };
+        if (s.name) token.name = s.name;
+        if (typeof s.mustChangePassword === "boolean") {
+          token.mustChangePassword = s.mustChangePassword;
+        }
       }
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
-        const su = session.user as { id?: string | null; role?: string | null; schoolId?: string | null };
+        const su = session.user as {
+          id?: string | null;
+          role?: string | null;
+          schoolId?: string | null;
+          mustChangePassword?: boolean | null;
+        };
         su.id = token.sub;
         su.role = typeof token.role === "string" ? token.role : null;
         su.schoolId = typeof token.schoolId === "string" ? token.schoolId : null;
+        su.mustChangePassword = token.mustChangePassword === true;
       }
       return session;
     },
@@ -74,3 +103,6 @@ export const {
     },
   },
 });
+
+// Server-side session refresh (used to clear mustChangePassword after a reset).
+export { handlers, signIn, signOut, auth, unstable_update as updateSession };

@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import bcrypt from "bcryptjs";
 import prisma from "@/lib/prisma";
 import { requireSession } from "@/lib/session";
+import { updateSession } from "@/lib/auth";
 
 // ============================================================
 //  PROFILE — the logged-in SCHOOL_ADMIN updates their own
@@ -80,8 +81,11 @@ export async function changeMyPassword(raw: unknown): Promise<ProfileActionResul
     const passwordHash = await bcrypt.hash(parsed.data.newPassword, 12);
     await prisma.user.update({
       where: { id: user.id },
-      data: { passwordHash },
+      data: { passwordHash, mustChangePassword: false },
     });
+
+    // Refresh the JWT so the middleware stops forcing this page.
+    await updateSession({ mustChangePassword: false });
 
     return { success: true };
   } catch {

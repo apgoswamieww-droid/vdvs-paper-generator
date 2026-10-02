@@ -198,3 +198,67 @@ export function schoolCredentialsEmail(args: {
 
   return { subject, html, text };
 }
+
+// ─────────────────────────────────────────────────────────
+//  Credentials email for a bulk-imported student
+// ─────────────────────────────────────────────────────────
+
+export function studentCredentialsEmail(args: {
+  studentName: string;
+  email: string;
+  password: string;
+  className: string;
+  schoolName: string;
+}): { subject: string; html: string; text: string } {
+  const { studentName, email, password, className, schoolName } = args;
+  const url = loginUrl();
+
+  const subject = `Your ${schoolName || "school"} student login credentials`;
+  const classLine = className ? ` You have been enrolled in <strong>${className}</strong>.` : "";
+
+  const html = `
+    <div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;color:#0f172a;">
+      <div style="background:#2563eb;border-radius:8px 8px 0 0;padding:20px 24px;">
+        <p style="margin:0;color:#fff;font-size:18px;font-weight:700;">${schoolName || "School"} — Welcome!</p>
+      </div>
+      <div style="border:1px solid #e2e8f0;border-top:none;border-radius:0 0 8px 8px;padding:24px;">
+        <p style="margin:0 0 12px;">Hi ${studentName},${classLine}</p>
+        <p style="margin:0 0 16px;">
+          Your student account is ready. Sign in at
+          <a href="${url}" style="color:#2563eb;">${url}</a> with:
+        </p>
+        <table role="presentation" style="width:100%;border-collapse:collapse;font-size:14px;">
+          <tr>
+            <td style="border:1px solid #e2e8f0;padding:10px 14px;color:#64748b;">Username</td>
+            <td style="border:1px solid #e2e8f0;padding:10px 14px;font-family:monospace;font-weight:700;">${email}</td>
+          </tr>
+          <tr>
+            <td style="border:1px solid #e2e8f0;padding:10px 14px;color:#64748b;">Password</td>
+            <td style="border:1px solid #e2e8f0;padding:10px 14px;font-family:monospace;font-weight:700;">${password}</td>
+          </tr>
+        </table>
+        <p style="margin:16px 0 0;color:#64748b;font-size:13px;">
+          Please keep these credentials private and do not share them.
+        </p>
+      </div>
+    </div>
+  `;
+
+  const text = [
+    `${schoolName || "School"} — Welcome!`,
+    "",
+    `Hi ${studentName},`,
+    className ? `You have been enrolled in ${className}.` : "",
+    "",
+    `Your student account is ready. Sign in at ${url}`,
+    "",
+    `Username: ${email}`,
+    `Password: ${password}`,
+    "",
+    "Please keep these credentials private and do not share them.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return { subject, html, text };
+}

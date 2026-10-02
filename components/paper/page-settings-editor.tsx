@@ -24,6 +24,7 @@ import {
 import { RotateCcw } from "lucide-react";
 import {
   DEFAULT_PAGE_CONFIG,
+  PAGE_COLUMNS,
   PAGE_LIMITS,
   PAGE_ORIENTATIONS,
   PAGE_SIZES,
@@ -169,6 +170,25 @@ export function PageSettingsEditor({ value, onChange, compact, className }: Prop
             }
             className="h-8 text-sm"
           />
+        </div>
+      </div>
+
+      {/* Question layout */}
+      <div className="space-y-1.5">
+        <Label className="text-[11px] text-muted-foreground">Question layout</Label>
+        <div className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-muted/40 p-1">
+          {PAGE_COLUMNS.map((c) => (
+            <Button
+              key={c.value}
+              type="button"
+              size="sm"
+              variant={value.columns === c.value ? "default" : "ghost"}
+              className="h-7 text-xs"
+              onClick={() => patch({ columns: c.value })}
+            >
+              {c.label}
+            </Button>
+          ))}
         </div>
       </div>
 

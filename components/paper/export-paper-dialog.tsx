@@ -3,10 +3,13 @@
 // ============================================================
 //  Export Paper Dialog
 //
-//  One place to prepare a download: pick PDF or Word, include the
-//  answer key, and fine-tune the page setup. The page settings
-//  arrive pre-filled from the paper's saved config and any change
-//  here applies to this export only.
+//  One place to prepare a download. Pick which document you want —
+//  the question paper, its answer key, or its full solution — then
+//  the format (PDF / Word) and the page setup. The answer key and
+//  the solution are always produced as their own separate files.
+//
+//  The page settings arrive pre-filled from the paper's saved config
+//  and any change here applies to this export only.
 // ============================================================
 
 import { useState } from "react";
@@ -22,35 +25,46 @@ import {
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { FileText, FileType2, Loader2 } from "lucide-react";
+import { FileText, FileType2, Grid3x3, KeyRound, Lightbulb, Loader2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { PageSettingsEditor } from "./page-settings-editor";
 import { DEFAULT_PAGE_CONFIG, type PageConfig } from "@/lib/paper-page";
+import { PAPER_DOCUMENT_LABELS, type PaperDocumentType } from "@/lib/paper-document";
+import {
+  EXPORT_FORMATS,
+  downloadPaperExport,
+  type ExportFormat,
+} from "@/lib/paper-export-client";
 
-type ExportFormat = "pdf" | "docx";
-
-const FORMATS: {
-  value: ExportFormat;
+const DOCUMENTS: {
+  value: PaperDocumentType;
   label: string;
   hint: string;
-  endpoint: string;
-  ext: string;
   icon: typeof FileText;
 }[] = [
   {
-    value: "pdf",
-    label: "PDF",
-    hint: "Print-ready, math formulas rendered",
-    endpoint: "/api/export-pdf",
-    ext: "pdf",
+    value: "paper",
+    label: PAPER_DOCUMENT_LABELS.paper,
+    hint: "The question paper as the students receive it.",
     icon: FileText,
   },
   {
-    value: "docx",
-    label: "Word (.docx)",
-    hint: "Editable in Word, Google Docs, LibreOffice",
-    endpoint: "/api/export-docx",
-    ext: "docx",
-    icon: FileType2,
+    value: "answer-key",
+    label: PAPER_DOCUMENT_LABELS["answer-key"],
+    hint: "Numbered answers only, in a document of its own.",
+    icon: KeyRound,
+  },
+  {
+    value: "solution",
+    label: PAPER_DOCUMENT_LABELS.solution,
+    hint: "Every question with its model answer and workings.",
+    icon: Lightbulb,
+  },
+  {
+    value: "omr",
+    label: PAPER_DOCUMENT_LABELS.omr,
+    hint: "Bubble answer sheet for mobile/scanner OMR (PDF only).",
+    icon: Grid3x3,
   },
 ];
 
@@ -63,10 +77,6 @@ type Props = {
   savedConfig: PageConfig | null;
 };
 
-function fileSafe(title: string): string {
-  return title.replace(/[^a-zA-Z0-9]/g, "_") || "paper";
-}
-
 export function ExportPaperDialog({
   open,
   onOpenChange,
@@ -74,7 +84,10 @@ export function ExportPaperDialog({
   paperTitle,
   savedConfig,
 }: Props) {
+  const [documentType, setDocumentType] = useState<PaperDocumentType>("paper");
   const [config, setConfig] = useState<PageConfig>(savedConfig ?? DEFAULT_PAGE_CONFIG);
+  // Only meaningful for the paper itself: a clean student copy by default,
+  // since the answers now have their own separate documents.
   const [includeAnswerKey, setIncludeAnswerKey] = useState(false);
   const [busy, setBusy] = useState<ExportFormat | null>(null);
 
@@ -83,43 +96,28 @@ export function ExportPaperDialog({
     if (next) {
       setConfig(savedConfig ?? DEFAULT_PAGE_CONFIG);
       setIncludeAnswerKey(false);
+      setDocumentType("paper");
       setBusy(null);
     }
     onOpenChange(next);
   }
 
   async function download(format: ExportFormat) {
-    const meta = FORMATS.find((f) => f.value === format);
-    if (!meta) return;
-
     setBusy(format);
     try {
-      const res = await fetch(meta.endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paperId, includeAnswerKey, pageOverrides: config }),
+      await downloadPaperExport({
+        paperId,
+        paperTitle,
+        documentType,
+        format,
+        includeAnswerKey:
+          documentType === "paper" || documentType === "omr" ? includeAnswerKey : false,
+        pageOverrides: config,
       });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}) as { error?: string });
-        toast.error(err.error || "Export failed. Please try again.");
-        return;
-      }
-
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${fileSafe(paperTitle)}${includeAnswerKey ? "_answer_key" : ""}.${meta.ext}`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
-      toast.success(`${meta.label} downloaded.`);
+      toast.success(`${PAPER_DOCUMENT_LABELS[documentType]} downloaded.`);
       onOpenChange(false);
-    } catch {
-      toast.error("Export failed. Please try again.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Export failed. Please try again.");
     } finally {
       setBusy(null);
     }
@@ -131,51 +129,110 @@ export function ExportPaperDialog({
         <DialogHeader>
           <DialogTitle>Export paper</DialogTitle>
           <DialogDescription>
-            Choose a format and adjust the page setup. Changes here apply to this download only —
-            save them on the paper to keep them.
+            Choose what to download and in which format. The answer key, the solution and the OMR
+            answer sheet are always generated as separate documents. Page setup changes apply to
+            this download only.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
-          <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/40 p-3">
-            <div>
-              <Label className="text-xs">Include answer key</Label>
-              <p className="text-[11px] text-muted-foreground">
-                {config.answerKeyOnNewPage
-                  ? "Answers are collected on their own page."
-                  : "Answers print under each question."}
-              </p>
-            </div>
-            <Switch
-              checked={includeAnswerKey}
-              onCheckedChange={(checked) => setIncludeAnswerKey(Boolean(checked))}
-            />
+          {/* Document kind */}
+          <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+            {DOCUMENTS.map((doc) => {
+              const active = documentType === doc.value;
+              return (
+                <button
+                  key={doc.value}
+                  type="button"
+                  onClick={() => setDocumentType(doc.value)}
+                  aria-pressed={active}
+                  className={cn(
+                    "rounded-lg border p-3 text-left transition-colors",
+                    active
+                      ? "border-primary bg-primary/10"
+                      : "border-border/60 bg-muted/30 hover:bg-muted/60"
+                  )}
+                >
+                  <span className="flex items-center gap-2">
+                    <doc.icon
+                      className={cn("h-4 w-4", active ? "text-primary" : "text-muted-foreground")}
+                    />
+                    <span className="text-xs font-semibold">{doc.label}</span>
+                  </span>
+                  <span className="mt-1 block text-[11px] leading-snug text-muted-foreground">
+                    {doc.hint}
+                  </span>
+                </button>
+              );
+            })}
           </div>
 
-          <PageSettingsEditor value={config} onChange={setConfig} />
+          {/* Answers — the paper prints them inline/on a page; the OMR sheet
+              shades the correct bubbles into a scoring master copy. */}
+          {(documentType === "paper" || documentType === "omr") && (
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/40 p-3">
+              <div>
+                <Label className="text-xs">
+                  {documentType === "omr" ? "Fill correct answers (master copy)" : "Print answers on the paper too"}
+                </Label>
+                <p className="text-[11px] text-muted-foreground">
+                  {documentType === "omr"
+                    ? !includeAnswerKey
+                      ? "Off — a blank student sheet."
+                      : "Correct bubbles are printed solid black for scoring."
+                    : !includeAnswerKey
+                      ? "Off — this export is a clean student copy."
+                      : config.answerKeyOnNewPage
+                        ? "Answers are collected on their own page."
+                        : "Answers print under each question."}
+                </p>
+              </div>
+              <Switch
+                checked={includeAnswerKey}
+                onCheckedChange={(checked) => setIncludeAnswerKey(Boolean(checked))}
+              />
+            </div>
+          )}
+
+          <PageSettingsEditor
+            value={config}
+            onChange={(next) => {
+              setConfig(next);
+              // "Answer key on a new page" is a placement choice — turn the key
+              // itself on too, so flipping that switch can never silently drop
+              // the answers from the paper export.
+              if (next.answerKeyOnNewPage && documentType === "paper") setIncludeAnswerKey(true);
+            }}
+          />
         </div>
 
         <DialogFooter className="gap-2 sm:justify-between">
           <Button variant="outline" onClick={() => handleOpenChange(false)} disabled={!!busy}>
             Cancel
           </Button>
-          <div className="flex gap-2">
-            {FORMATS.map((f) => (
-              <Button
-                key={f.value}
-                onClick={() => void download(f.value)}
-                disabled={!!busy}
-                title={f.hint}
-                className="gap-1.5"
-              >
-                {busy === f.value ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <f.icon className="h-3.5 w-3.5" />
-                )}
-                {f.label}
-              </Button>
-            ))}
+          <div className="flex flex-wrap gap-2">
+            {EXPORT_FORMATS.map((f) => {
+              const Icon = f.value === "pdf" ? FileText : FileType2;
+              // The OMR sheet is a PDF-only document: its layout depends on
+              // exact print geometry (registration marks, bubble positions).
+              const omrPdfOnly = documentType === "omr" && f.value === "docx";
+              return (
+                <Button
+                  key={f.value}
+                  onClick={() => void download(f.value)}
+                  disabled={!!busy || omrPdfOnly}
+                  title={omrPdfOnly ? "OMR sheet exports as PDF only." : f.hint}
+                  className="gap-1.5"
+                >
+                  {busy === f.value ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Icon className="h-3.5 w-3.5" />
+                  )}
+                  {f.label}
+                </Button>
+              );
+            })}
           </div>
         </DialogFooter>
       </DialogContent>

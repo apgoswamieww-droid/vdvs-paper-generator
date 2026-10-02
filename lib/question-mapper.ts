@@ -35,7 +35,7 @@ export function toQuestionData(v: QuestionFormValue): {
   let answerKey: string | null = v.answerKey || null;
 
   if (v.questionType === "MCQ") {
-    options = { kind: "mcq", choices: v.options };
+    options = { kind: "mcq", choices: v.options, layout: v.layout ?? "auto" };
     answerKey =
       v.options
         .filter((o) => o.isCorrect)

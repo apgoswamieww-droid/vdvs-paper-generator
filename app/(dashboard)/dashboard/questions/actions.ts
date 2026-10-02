@@ -19,6 +19,7 @@ import prisma from "@/lib/prisma";
 import { requireSession } from "@/lib/session";
 import { randomQuestionCode } from "@/lib/question-code";
 import { toQuestionData } from "@/lib/question-mapper";
+import { questionScopeFor, teacherSubjectIds } from "@/lib/question-scope";
 import {
   questionFormSchema,
   questionFilterSchema,
@@ -26,6 +27,7 @@ import {
   type QuestionFormValue,
 } from "@/lib/validations";
 import type { PaginatedResponse } from "@/types";
+import { resolveAdminScope } from "@/app/(dashboard)/dashboard/admin/scope";
 
 const QUESTION_PATHS = ["/dashboard/questions", "/dashboard"];
 
@@ -76,6 +78,14 @@ export async function createQuestion(
   if (missing) return { success: false, error: missing };
 
   const data = parsed.data;
+
+  // Teachers may only author questions in subjects assigned to them.
+  if (session.role === "TEACHER") {
+    const mySubjects = await teacherSubjectIds(session.id);
+    if (!mySubjects.includes(data.subjectId)) {
+      return { success: false, error: "You can only create questions in your assigned subjects." };
+    }
+  }
 
   // Tenant ownership check on chapter (implies subject belongs to tenant too)
   const chapter = await prisma.chapter.findFirst({
@@ -155,6 +165,12 @@ export async function updateQuestion(
   if (!existing) return { success: false, error: "Question not found." };
 
   const data = parsed.data;
+  if (session.role === "TEACHER") {
+    const mySubjects = await teacherSubjectIds(session.id);
+    if (!mySubjects.includes(data.subjectId)) {
+      return { success: false, error: "You can only edit questions in your assigned subjects." };
+    }
+  }
   const chapter = await prisma.chapter.findFirst({
     where: { id: data.chapterId, subject: { schoolId: session.schoolId } },
     include: { subject: { select: { id: true } } },
@@ -193,6 +209,49 @@ export async function deleteQuestion(id: string): Promise<ActionState> {
   return { success: true, message: "Question deleted." };
 }
 
+/**
+ * Assigns (or clears) the reviewing teacher for a question. Admin-only —
+ * teachers never see AI questions with no teacher, so someone must be able
+ * to point an unassigned question at a teacher who will appear in their
+ * review queue.
+ */
+export async function assignQuestionTeacher(
+  questionId: string,
+  teacherId: string | null
+): Promise<ActionState> {
+  const scope = await resolveAdminScope();
+
+  const question = await prisma.question.findFirst({
+    where: { id: questionId, schoolId: scope.schoolId },
+    select: { id: true },
+  });
+  if (!question) return { success: false, error: "Question not found in your school." };
+
+  if (teacherId) {
+    const teacher = await prisma.user.findFirst({
+      where: { id: teacherId, schoolId: scope.schoolId, role: "TEACHER", isActive: true },
+      select: { id: true },
+    });
+    if (!teacher) return { success: false, error: "Teacher not found in your school." };
+  }
+
+  try {
+    await prisma.question.updateMany({
+      where: { id: questionId, schoolId: scope.schoolId },
+      data: { assignedTeacherId: teacherId },
+    });
+  } catch {
+    return { success: false, error: "Could not update question." };
+  }
+
+  revalidateQuestions();
+  revalidatePath("/dashboard/teacher/questions/review");
+  return {
+    success: true,
+    message: teacherId ? "Question assigned to teacher." : "Question unassigned.",
+  };
+}
+
 // ------------------------------------------------------------
 //  Read: paginated, filtered list
 // ------------------------------------------------------------
@@ -211,6 +270,9 @@ export type QuestionListDTO = {
   tags: string[];
   previousYearTag: string | null;
   createdAt: string;
+  status: QuestionStatus;
+  createdByAi: boolean;
+  assignedTeacherId: string | null;
   subject: { id: string; name: string } | null;
   chapter: { id: string; name: string } | null;
 };
@@ -218,7 +280,7 @@ export type QuestionListDTO = {
 export async function listQuestions(
   rawFilters: unknown
 ): Promise<PaginatedResponse<QuestionListDTO>> {
-  const { schoolId } = await requireSession();
+  const session = await requireSession();
 
   const filters = questionFilterSchema.safeParse(rawFilters);
   if (!filters.success) {
@@ -229,8 +291,10 @@ export async function listQuestions(
   }
 
   const f = filters.data;
+  const scope = await questionScopeFor(session);
   const where: Prisma.QuestionWhereInput = {
-    schoolId,
+    schoolId: session.schoolId,
+    AND: [scope],
     ...(f.subjectId ? { subjectId: f.subjectId } : {}),
     ...(f.chapterId ? { chapterId: f.chapterId } : {}),
     ...(f.topicId ? { topicId: f.topicId } : {}),
@@ -270,6 +334,9 @@ export async function listQuestions(
         tags: true,
         previousYearTag: true,
         createdAt: true,
+        status: true,
+        createdByAi: true,
+        assignedTeacherId: true,
         subject: { select: { id: true, name: true } },
         chapter: { select: { id: true, name: true } },
       },
@@ -293,6 +360,9 @@ export async function listQuestions(
       tags: r.tags,
       previousYearTag: r.previousYearTag,
       createdAt: r.createdAt.toISOString(),
+      status: r.status,
+      createdByAi: r.createdByAi,
+      assignedTeacherId: r.assignedTeacherId,
       subject: r.subject,
       chapter: r.chapter,
     })),
@@ -322,6 +392,9 @@ const QUESTION_LIST_SELECT = {
   tags: true,
   previousYearTag: true,
   createdAt: true,
+  status: true,
+  createdByAi: true,
+  assignedTeacherId: true,
   subject: { select: { id: true, name: true } },
   chapter: { select: { id: true, name: true } },
 } as const;
@@ -339,6 +412,9 @@ type QuestionListRow = {
   tags: string[];
   previousYearTag: string | null;
   createdAt: Date;
+  status: QuestionStatus;
+  createdByAi: boolean;
+  assignedTeacherId: string | null;
   subject: { id: string; name: string } | null;
   chapter: { id: string; name: string } | null;
 };
@@ -357,6 +433,9 @@ function toQuestionListDTO(r: QuestionListRow): QuestionListDTO {
     tags: r.tags,
     previousYearTag: r.previousYearTag,
     createdAt: r.createdAt.toISOString(),
+    status: r.status,
+    createdByAi: r.createdByAi,
+    assignedTeacherId: r.assignedTeacherId,
     subject: r.subject,
     chapter: r.chapter,
   };
@@ -364,13 +443,12 @@ function toQuestionListDTO(r: QuestionListRow): QuestionListDTO {
 
 /** Details for a set of question ids (all tenant-scoped). */
 export async function getQuestionsByIds(ids: string[]): Promise<QuestionListDTO[]> {
-  const { schoolId } = await requireSession();
-
+  const session = await requireSession();
   const clean = [...new Set((ids ?? []).filter(Boolean))].slice(0, 300);
   if (clean.length === 0) return [];
 
   const rows = await prisma.question.findMany({
-    where: { id: { in: clean }, schoolId },
+    where: { id: { in: clean }, schoolId: session.schoolId, AND: [await questionScopeFor(session)] },
     select: QUESTION_LIST_SELECT,
   });
 
@@ -383,13 +461,13 @@ export async function getQuestionsByIds(ids: string[]): Promise<QuestionListDTO[
  * then widens to the whole subject so there is almost always a choice.
  */
 export async function findReplacementQuestions(raw: unknown): Promise<QuestionListDTO[]> {
-  const { schoolId } = await requireSession();
+  const session = await requireSession();
 
   const input = (raw ?? {}) as { questionId?: string; excludeIds?: string[] };
   if (!input.questionId) return [];
 
   const reference = await prisma.question.findFirst({
-    where: { id: input.questionId, schoolId },
+    where: { id: input.questionId, schoolId: session.schoolId },
     select: { id: true, subjectId: true, chapterId: true, questionType: true, difficulty: true, marks: true },
   });
   if (!reference) return [];
@@ -397,7 +475,8 @@ export async function findReplacementQuestions(raw: unknown): Promise<QuestionLi
   const exclude = [...new Set([...(input.excludeIds ?? []), reference.id])].filter(Boolean);
 
   const baseWhere: Prisma.QuestionWhereInput = {
-    schoolId,
+    schoolId: session.schoolId,
+    AND: [await questionScopeFor(session)],
     isActive: true,
     questionType: reference.questionType,
     marks: reference.marks,
@@ -508,10 +587,10 @@ export type RecentQuestionDTO = {
 export async function listRecentQuestions(
   limit = 5
 ): Promise<RecentQuestionDTO[]> {
-  const { schoolId } = await requireSession();
+  const session = await requireSession();
 
   const rows = await prisma.question.findMany({
-    where: { schoolId },
+    where: { schoolId: session.schoolId, AND: [await questionScopeFor(session)] },
     select: {
       id: true,
       code: true,
@@ -600,6 +679,7 @@ export async function getQuestionById(id: string): Promise<QuestionDetailDTO | n
     caseStudyFormat: q.caseStudyFormat,
     status: q.status,
     createdByAi: q.createdByAi,
+    assignedTeacherId: q.assignedTeacherId,
     isActive: q.isActive,
     examYear: q.examYear,
     imageUrl: q.imageUrl,

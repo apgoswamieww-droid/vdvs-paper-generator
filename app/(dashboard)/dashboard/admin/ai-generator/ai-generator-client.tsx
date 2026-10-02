@@ -30,6 +30,11 @@ import {
 } from "lucide-react";
 import { saveGeneratedQuestions } from "./actions";
 import { cn } from "@/lib/utils";
+import {
+  OPTION_LAYOUT_LABELS,
+  OPTION_LAYOUT_ORDER,
+  type McqLayoutMode,
+} from "@/lib/question-options";
 import type { TaxonomyNode } from "./page";
 
 // ------------------------------------------------------------
@@ -38,7 +43,11 @@ import type { TaxonomyNode } from "./page";
 
 type GeneratedQuestion = {
   questionText: string;
-  options: { kind: "mcq"; choices: { label: string; text: string; isCorrect: boolean }[] } | null;
+  options: {
+    kind: "mcq";
+    choices: { label: string; text: string; isCorrect: boolean }[];
+    layout?: McqLayoutMode;
+  } | null;
   answerKey: string;
   explanation: string;
   tags: string[];
@@ -187,7 +196,10 @@ export function AiGeneratorClient({
       }
       setContext(data.context);
       const prepared: ReviewCard[] = data.questions.map((q) => ({
-        q: { ...q, bloom: BLOOMS.includes(q.bloom as (typeof BLOOMS)[number]) ? q.bloom : "REMEMBER" },
+        q: {
+          ...q,
+          bloom: BLOOMS.includes(q.bloom as (typeof BLOOMS)[number]) ? q.bloom : "REMEMBER",
+        },
         assignedTeacherId: null,
       }));
       setCards(prepared);
@@ -218,6 +230,7 @@ export function AiGeneratorClient({
             ...c.q,
             options: {
               kind: "mcq",
+              layout: c.q.options.layout ?? "auto",
               choices: c.q.options.choices.map((ch, ci) => (ci === choiceIndex ? { ...ch, ...patch } : ch)),
             },
           },
@@ -236,8 +249,24 @@ export function AiGeneratorClient({
             ...c.q,
             options: {
               kind: "mcq",
+              layout: c.q.options.layout ?? "auto",
               choices: c.q.options.choices.map((ch, ci) => ({ ...ch, isCorrect: ci === choiceIndex })),
             },
+          },
+        };
+      })
+    );
+  }
+
+  function updateLayout(index: number, next: McqLayoutMode) {
+    setCards((prev) =>
+      prev.map((c, i) => {
+        if (i !== index || !c.q.options) return c;
+        return {
+          ...c,
+          q: {
+            ...c.q,
+            options: { kind: "mcq", layout: next, choices: c.q.options.choices },
           },
         };
       })
@@ -302,6 +331,9 @@ export function AiGeneratorClient({
                   bloom: BLOOMS.includes(fresh.bloom as (typeof BLOOMS)[number])
                     ? fresh.bloom
                     : c.q.bloom,
+                  options: fresh.options
+                    ? { ...fresh.options, layout: c.q.options?.layout ?? "auto" }
+                    : null,
                 },
                 assignedTeacherId: c.assignedTeacherId,
               }
@@ -346,6 +378,7 @@ export function AiGeneratorClient({
         options: c.q.options
           ? c.q.options.choices.map((o) => ({ label: o.label, text: o.text, isCorrect: o.isCorrect }))
           : undefined,
+        layout: c.q.options?.layout ?? "auto",
         answerKey: c.q.answerKey || undefined,
         explanation: c.q.explanation || undefined,
         tags: c.q.tags,
@@ -731,6 +764,27 @@ export function AiGeneratorClient({
                               </Button>
                             </div>
                           ))}
+                          <div className="space-y-1.5 border-t border-border/60 pt-3">
+                            <Label>Option layout</Label>
+                            <Select
+                              value={card.q.options.layout ?? "auto"}
+                              onValueChange={(v) => { if (v) updateLayout(index, v as McqLayoutMode); }}
+                            >
+                              <SelectTrigger className="w-full bg-slate-950">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {OPTION_LAYOUT_ORDER.map((l) => (
+                                  <SelectItem key={l} value={l}>
+                                    {OPTION_LAYOUT_LABELS[l]}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <p className="text-[10px] text-muted-foreground">
+                              Override for just this question on the printed paper and previews.
+                            </p>
+                          </div>
                         </div>
                       )}
 

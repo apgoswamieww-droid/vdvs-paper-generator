@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import prisma from "@/lib/prisma";
 import { resolveAdminScope } from "../scope";
+import { normalizeStoredHeaderConfig } from "@/lib/paper-header";
 import { SettingsTabs } from "./settings-tabs";
 
 export const metadata: Metadata = {
@@ -30,6 +31,7 @@ export default async function AdminSettingsPage({
       mediums: true,
       defaultInstructions: true,
       watermarkText: true,
+      headerConfig: true,
       allowSelfRegistration: true,
       teacherCanEdit: true,
       planTier: true,
@@ -59,6 +61,7 @@ export default async function AdminSettingsPage({
         mediums: school.mediums as ("ENGLISH" | "GUJARATI")[],
         defaultInstructions: school.defaultInstructions ?? "",
         watermarkText: school.watermarkText ?? "",
+        headerConfig: school.headerConfig ? normalizeStoredHeaderConfig(school.headerConfig) : null,
         allowSelfRegistration: school.allowSelfRegistration,
         teacherCanEdit: school.teacherCanEdit,
         planTier: school.planTier,

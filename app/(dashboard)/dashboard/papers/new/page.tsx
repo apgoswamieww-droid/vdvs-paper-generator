@@ -2,7 +2,13 @@ import type { Metadata } from "next";
 import { getTaxonomyTree } from "../../questions/actions";
 import prisma from "@/lib/prisma";
 import { requireSession } from "@/lib/session";
-import { EMPTY_HEADER, defaultHeaderFromSchool } from "@/lib/paper-header";
+import {
+  EMPTY_HEADER,
+  defaultHeaderFromSchool,
+  isCanvasHeader,
+  normalizeCanvasLayout,
+  normalizeHeaderConfig,
+} from "@/lib/paper-header";
 import { PaperBuilderClient } from "./paper-builder-client";
 
 export const metadata: Metadata = {
@@ -24,6 +30,7 @@ export default async function NewPaperPage() {
       phone: true,
       board: true,
       academicYear: true,
+      headerConfig: true,
     },
   });
 
@@ -35,6 +42,20 @@ export default async function NewPaperPage() {
     board: school?.board ?? null,
     academicYear: school?.academicYear ?? null,
   };
+
+  // Seed new papers from the school's reusable header design when present,
+  // otherwise from the school profile, otherwise empty.
+  let defaultHeader: ReturnType<typeof defaultHeaderFromSchool> = EMPTY_HEADER;
+  if (school?.headerConfig) {
+    if (isCanvasHeader(school.headerConfig)) {
+      const canvas = normalizeCanvasLayout(school.headerConfig as { canvas?: unknown });
+      defaultHeader = { rows: [], canvas };
+    } else {
+      defaultHeader = normalizeHeaderConfig(school.headerConfig);
+    }
+  } else if (school) {
+    defaultHeader = defaultHeaderFromSchool(profile);
+  }
 
   return (
     <div className="space-y-6">
@@ -50,7 +71,7 @@ export default async function NewPaperPage() {
           ...profile,
           defaultInstructions: school?.defaultInstructions ?? "",
           watermarkText: school?.watermarkText ?? "",
-          defaultHeader: school ? defaultHeaderFromSchool(profile) : EMPTY_HEADER,
+          defaultHeader,
         }}
       />
     </div>

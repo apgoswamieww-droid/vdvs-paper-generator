@@ -6,9 +6,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { formatDateISO } from "@/lib/utils";
 import {
   listQuestions,
   deleteQuestion,
+  assignQuestionTeacher,
   type QuestionListDTO,
   type TaxonomyNode,
 } from "./actions";
@@ -37,7 +39,15 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmDialog, showResultToast, showErrorToast } from "@/components/shared";
-import { Plus, Upload, Search, X, Pencil, Trash2, Eye, ChevronLeft, ChevronRight } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Plus, Upload, Search, X, Pencil, Trash2, Eye, UserCheck, ChevronLeft, ChevronRight } from "lucide-react";
 import { ImportDialog } from "./import/import-dialog";
 import { QuestionDetailDialog } from "./question-detail-dialog";
 
@@ -78,9 +88,13 @@ const MEDIUM_LABELS: Record<string, string> = {
 export function QuestionsClient({
   initialData,
   tree,
+  isAdmin,
+  teachers,
 }: {
   initialData: PaginatedResponse<QuestionListDTO>;
   tree: TaxonomyNode[];
+  isAdmin: boolean;
+  teachers: { id: string; name: string }[];
 }) {
   const router = useRouter();
   const [data, setData] = useState(initialData);
@@ -100,6 +114,11 @@ export function QuestionsClient({
   // Delete confirmation state
   const [deleteTarget, setDeleteTarget] = useState<QuestionListDTO | null>(null);
   const [deletePending, setDeletePending] = useState(false);
+
+  // Assign-to-teacher dialog state (admins only)
+  const [assignTarget, setAssignTarget] = useState<QuestionListDTO | null>(null);
+  const [assignTeacherId, setAssignTeacherId] = useState("");
+  const [assignPending, setAssignPending] = useState(false);
 
   const fetchPage = useCallback((f: Filters) => {
     startTransition(async () => {
@@ -160,6 +179,30 @@ export function QuestionsClient({
       showErrorToast();
     } finally {
       setDeletePending(false);
+    }
+  };
+
+  const canAssign = (q: QuestionListDTO) =>
+    isAdmin && q.createdByAi && q.status === "PENDING" && !q.assignedTeacherId;
+
+  const onAssign = async () => {
+    if (!assignTarget || !assignTeacherId) return;
+    setAssignPending(true);
+    try {
+      const res = await assignQuestionTeacher(assignTarget.id, assignTeacherId);
+      showResultToast(res, {
+        successMessage: "Question assigned to teacher.",
+        errorMessage: "Could not assign the question.",
+      });
+      if (res.success) {
+        setAssignTarget(null);
+        setAssignTeacherId("");
+        refetch();
+      }
+    } catch {
+      showErrorToast();
+    } finally {
+      setAssignPending(false);
     }
   };
 
@@ -377,14 +420,26 @@ export function QuestionsClient({
                       <div className="line-clamp-2">
                         <KaTeXRenderer text={q.questionText} />
                       </div>
-                      {q.previousYearTag && (
-                        <Badge
-                          variant="outline"
-                          className="mt-1 text-[10px] border-primary/30 text-primary"
-                        >
-                          {q.previousYearTag}
-                        </Badge>
-                      )}
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {q.previousYearTag && (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] border-primary/30 text-primary"
+                          >
+                            {q.previousYearTag}
+                          </Badge>
+                        )}
+                        {q.createdByAi && (
+                          <Badge variant="outline" className="text-[10px] border-fuchsia-500/40 text-fuchsia-400">
+                            AI
+                          </Badge>
+                        )}
+                        {q.createdByAi && q.status === "PENDING" && (
+                          <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-400">
+                            Pending
+                          </Badge>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
                       <Badge variant="secondary" className="text-[11px]">
@@ -422,10 +477,26 @@ export function QuestionsClient({
                       )}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
-                      {new Date(q.createdAt).toLocaleDateString()}
+                      {formatDateISO(q.createdAt)}
                     </TableCell>
                     <TableCell>
                       <div className="flex justify-end gap-0.5">
+                        {canAssign(q) && (
+                          <Button
+                            size="icon-xs"
+                            variant="ghost"
+                            aria-label="Assign to a teacher"
+                            title="Assign to a teacher for review"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setAssignTeacherId("");
+                              setAssignTarget(q);
+                            }}
+                            className="text-muted-foreground hover:text-primary"
+                          >
+                            <UserCheck className="h-3 w-3" />
+                          </Button>
+                        )}
                         <Button
                           size="icon-xs"
                           variant="ghost"
@@ -532,6 +603,37 @@ export function QuestionsClient({
         tree={tree}
         onImported={refetch}
       />
+
+      <Dialog
+        open={!!assignTarget}
+        onOpenChange={(o) => !o && setAssignTarget(null)}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Assign to a teacher</DialogTitle>
+            <DialogDescription>
+              The assigned teacher will find this AI question in their review queue.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <SelectFilter
+              placeholder="Select a teacher…"
+              value={assignTeacherId || null}
+              onChange={(v) => setAssignTeacherId(v ?? "")}
+              items={teachers.map((t) => ({ value: t.id, label: t.name }))}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={assignPending} onClick={() => setAssignTarget(null)}>
+              Cancel
+            </Button>
+            <Button disabled={assignPending || !assignTeacherId} onClick={onAssign} className="gap-1.5">
+              <UserCheck className="h-4 w-4" />
+              {assignPending ? "Assigning…" : "Assign"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ConfirmDialog
         open={!!deleteTarget}

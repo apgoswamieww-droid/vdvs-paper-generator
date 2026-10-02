@@ -6,6 +6,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { formatDateISO } from "@/lib/utils";
 import { ConfirmDialog, showResultToast, showErrorToast, toast } from "@/components/shared";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,21 +15,26 @@ import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { HeaderEditor } from "@/components/paper/header-editor";
 import { HeaderRenderer } from "@/components/paper/header-renderer";
 import { PageSettingsEditor } from "@/components/paper/page-settings-editor";
+import { PaperSheet } from "@/components/paper/paper-sheet";
 import { ExportPaperDialog } from "@/components/paper/export-paper-dialog";
 import { ReplaceQuestionDialog } from "@/components/paper/replace-question-dialog";
-import { DEFAULT_PAGE_CONFIG, type PageConfig } from "@/lib/paper-page";
-import { parseMcqOptions } from "@/lib/question-options";
+import {
+  DEFAULT_PAGE_CONFIG,
+  normalizePageConfig,
+  type PageConfig,
+} from "@/lib/paper-page";
+import { mcqOptionsLayout, parseMcqLayout, parseMcqOptions } from "@/lib/question-options";
+import { displaySectionInstructions } from "@/lib/section-instructions";
 import { KaTeXRenderer } from "@/components/shared/katex-text";
+import { downloadPaperExport } from "@/lib/paper-export-client";
+import { PAPER_DOCUMENT_LABELS, type PaperDocumentType } from "@/lib/paper-document";
 import {
   EMPTY_HEADER,
   buildHeaderContext,
   defaultHeaderFromSchool,
-  newCellsRow,
-  newTextCell,
-  type HeaderConfig,
+  isCanvasHeader,
 } from "@/lib/paper-header";
 import {
   Download,
@@ -44,6 +50,9 @@ import {
   Loader2,
   ArrowLeft,
   Repeat2,
+  KeyRound,
+  Lightbulb,
+  Grid3x3,
 } from "lucide-react";
 import {
   publishPaper,
@@ -60,17 +69,14 @@ const STATUS_CONFIG: Record<string, { color: string; icon: React.ElementType }> 
   ARCHIVED: { color: "bg-zinc-500/15 text-zinc-400 border-zinc-500/20", icon: FileText },
 };
 
-function legacyHeaderConfig(text: string | null): HeaderConfig {
-  if (!text) return EMPTY_HEADER;
-  return { rows: [newCellsRow([newTextCell({ text }, "center")])] };
-}
-
 export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [actionState, setActionState] = useState<ActionState | null>(null);
   const [showAnswerKey, setShowAnswerKey] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  // Which standalone document the header's quick-action buttons are fetching.
+  const [quickExporting, setQuickExporting] = useState<PaperDocumentType | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [replaceTarget, setReplaceTarget] = useState<{
     sectionId: string;
@@ -81,21 +87,19 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
   // Customization
   const [editMode, setEditMode] = useState(false);
 
-  // The structured header derived from the school profile — the same default the
-  // paper builder starts from, so "Reset to school default" means the same thing here.
-  const schoolDefaultHeader = useMemo(
-    () => (paper.school ? defaultHeaderFromSchool(paper.school) : EMPTY_HEADER),
+  // The header comes from the school's reusable design (single source of
+  // truth) — papers no longer store their own copy.
+  const headerConfig = useMemo(
+    () =>
+      paper.school?.headerConfig ??
+      (paper.school ? defaultHeaderFromSchool(paper.school) : EMPTY_HEADER),
     [paper.school]
   );
-
-  const [headerConfig, setHeaderConfig] = useState<HeaderConfig>(() => {
-    if (paper.headerConfig) return paper.headerConfig;
-    if (paper.schoolHeader) return legacyHeaderConfig(paper.schoolHeader);
-    return schoolDefaultHeader;
-  });
   const [watermarkText, setWatermarkText] = useState(paper.watermarkText || "");
   const [instructions, setInstructions] = useState(paper.instructions || "");
-  const [pageConfig, setPageConfig] = useState<PageConfig>(paper.pageConfig ?? DEFAULT_PAGE_CONFIG);
+  const [pageConfig, setPageConfig] = useState<PageConfig>(() =>
+    normalizePageConfig(paper.pageConfig ?? DEFAULT_PAGE_CONFIG)
+  );
 
   const headerContext = useMemo(
     () =>
@@ -170,9 +174,31 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
     }
   }
 
+  /**
+   * Quick actions: the answer key and the solution are separate documents, so
+   * they get their own buttons that download straight away (PDF, using the
+   * paper's saved page setup). The dialog stays for choosing another format.
+   */
+  async function handleQuickExport(documentType: PaperDocumentType) {
+    setQuickExporting(documentType);
+    try {
+      await downloadPaperExport({
+        paperId: paper.id,
+        paperTitle: paper.title,
+        documentType,
+        format: "pdf",
+      });
+      toast.success(`${PAPER_DOCUMENT_LABELS[documentType]} downloaded.`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Export failed. Please try again.");
+    } finally {
+      setQuickExporting(null);
+    }
+  }
+
   async function handleSaveCustomization() {
     const fd = new FormData();
-    fd.append("payload", JSON.stringify({ headerConfig, watermarkText, instructions, pageConfig }));
+    fd.append("payload", JSON.stringify({ watermarkText, instructions, pageConfig }));
     const result = await updatePaper(paper.id, null, fd);
     setActionState(result);
     showResultToast(result, { successMessage: "Customization saved." });
@@ -217,7 +243,7 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
               Created by {paper.createdBy?.name || paper.createdBy?.email} on{" "}
-              {new Date(paper.createdAt).toLocaleDateString()}
+              {formatDateISO(paper.createdAt)}
             </p>
           </div>
         </div>
@@ -225,6 +251,51 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
           <Button variant="outline" size="sm" onClick={() => setEditMode(!editMode)} className="gap-1.5">
             <Settings className="h-3.5 w-3.5" />
             {editMode ? "Cancel" : "Customize"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void handleQuickExport("answer-key")}
+            disabled={!!quickExporting}
+            className="gap-1.5"
+            title="Download this paper's answer key as a separate PDF"
+          >
+            {quickExporting === "answer-key" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <KeyRound className="h-3.5 w-3.5" />
+            )}
+            Answer Key
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void handleQuickExport("solution")}
+            disabled={!!quickExporting}
+            className="gap-1.5"
+            title="Download a separate PDF with every question solved"
+          >
+            {quickExporting === "solution" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Lightbulb className="h-3.5 w-3.5" />
+            )}
+            Solution
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void handleQuickExport("omr")}
+            disabled={!!quickExporting}
+            className="gap-1.5"
+            title="Download a bubble answer sheet (PDF) for mobile/scanner OMR"
+          >
+            {quickExporting === "omr" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Grid3x3 className="h-3.5 w-3.5" />
+            )}
+            OMR Sheet
           </Button>
           <Button variant="outline" size="sm" onClick={() => setExportOpen(true)} className="gap-1.5">
             <Download className="h-3.5 w-3.5" />
@@ -262,17 +333,6 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
             <CardTitle className="text-base">Paper Customization</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label>School Header (for PDF)</Label>
-              <HeaderEditor
-                value={headerConfig}
-                onChange={setHeaderConfig}
-                context={headerContext}
-                logoUrl={paper.school?.logoUrl ?? null}
-                schoolDefault={paper.school ? schoolDefaultHeader : null}
-                schoolProfile={paper.school}
-              />
-            </div>
             <div className="space-y-2">
               <Label>Page Layout (PDF &amp; Word)</Label>
               <PageSettingsEditor value={pageConfig} onChange={setPageConfig} />
@@ -329,9 +389,9 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
           <CardTitle>Paper Preview</CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="rounded-lg border bg-white p-8 text-black">
+          <PaperSheet config={pageConfig}>
             {/* School Header */}
-            {headerConfig.rows.length > 0 ? (
+            {headerConfig.rows.length > 0 || isCanvasHeader(headerConfig) ? (
               <HeaderRenderer
                 config={headerConfig}
                 context={headerContext}
@@ -348,15 +408,6 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
 
             <Separator className="my-4 bg-slate-300" />
 
-            <div className="text-center">
-              <h2 className="text-xl font-bold">{paper.title}</h2>
-              <p className="mt-1 text-sm text-slate-600">
-                {paper.subject?.name && `${paper.subject.name} — `}
-                Total Marks: {paper.totalMarks}
-                {paper.duration && ` | Duration: ${paper.duration} min`}
-              </p>
-            </div>
-
             {instructions && (
               <div className="mt-4 rounded border border-slate-200 bg-slate-50 p-3 text-sm">
                 <p className="mb-1 font-semibold">Instructions:</p>
@@ -364,7 +415,19 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
               </div>
             )}
 
-            {paper.sections.map((section) => (
+            <div
+              style={
+                pageConfig.columns === 2
+                  ? { columnCount: 2, columnGap: "2rem", columnRule: "1px solid #1a1a1a", columnFill: "balance" }
+                  : undefined
+              }
+            >
+            {paper.sections.map((section, sIdx) => {
+              // Continuous numbering across sections — matches every export.
+              const numberOffset = paper.sections
+                .slice(0, sIdx)
+                .reduce((sum, s) => sum + s.questions.length, 0);
+              return (
               <div key={section.id} className="mt-6">
                 <h3 className="mb-3 border-b border-slate-200 pb-1 text-base font-bold">
                   {section.title}
@@ -372,15 +435,14 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
                     ({section.totalMarks} marks)
                   </span>
                 </h3>
-                {section.instructions && (
+                {displaySectionInstructions(section.instructions) && (
                   <p className="mb-2 text-xs italic text-slate-500">
-                    {section.instructions}
+                    {displaySectionInstructions(section.instructions)}
                   </p>
                 )}
 
                 <div className="space-y-3">
                   {section.questions.map((sq, qIdx) => {
-                    const marks = sq.marksOverride ?? sq.question.marks;
                     const q = sq.question;
                     const isMCQ = q.questionType === "MCQ";
                     const options = isMCQ ? parseMcqOptions(q.options) : [];
@@ -388,14 +450,22 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
                     return (
                       <div key={sq.id} className="flex gap-2">
                         <span className="shrink-0 text-sm font-semibold">
-                          {qIdx + 1}.
+                          {numberOffset + qIdx + 1}.
                         </span>
                         <div className="flex-1">
                           <div className="text-sm">
                             <KaTeXRenderer text={q.questionText} />
                           </div>
                           {isMCQ && options.length > 0 && (
-                            <div className="mt-1 grid grid-cols-2 gap-1 text-xs">
+                            <div
+                              className="mt-1 grid gap-1 text-xs"
+                              style={{
+                                gridTemplateColumns: `repeat(${mcqOptionsLayout(
+                                  options.map((o) => o.text),
+                                  parseMcqLayout(q.options)
+                                )}, minmax(0, 1fr))`,
+                              }}
+                            >
                               {options.map((opt) => (
                                 <div key={opt.label} className="flex gap-1">
                                   <span className="font-medium">({opt.label})</span>
@@ -434,21 +504,22 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
                             <Repeat2 className="h-3 w-3" />
                             Replace
                           </Button>
-                          <span className="text-xs text-slate-400">[{marks}m]</span>
                         </div>
                       </div>
                     );
                   })}
+</div>
                 </div>
-              </div>
-            ))}
+                );
+              })}
+            </div>
 
             {watermarkText && (
               <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center rotate-[-30deg] text-6xl font-bold text-slate-900/5">
                 {watermarkText}
               </div>
             )}
-          </div>
+          </PaperSheet>
 
           <div className="flex justify-center">
             <Button

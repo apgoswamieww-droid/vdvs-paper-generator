@@ -34,6 +34,7 @@ const itemSchema = z.object({
   tags: z.array(z.string().trim().max(50)).max(8).default([]),
   difficulty: z.enum(["EASY", "MEDIUM", "HARD"]).default("MEDIUM"),
   bloom: z.enum(BLOOM_LEVELS).default("REMEMBER"),
+  layout: z.enum(["auto", "one-row", "grid2", "stacked"]).optional().default("auto"),
   assignedTeacherId: z.string().trim().optional().nullable(),
 });
 
@@ -154,7 +155,7 @@ export async function saveGeneratedQuestions(raw: unknown): Promise<SaveGenerate
             difficulty: q.difficulty,
             medium: context.medium,
             marks: 1,
-            options: isMcq && q.options ? { kind: "mcq", choices: q.options } : Prisma.DbNull,
+            options: isMcq && q.options ? { kind: "mcq", choices: q.options, layout: q.layout } : Prisma.DbNull,
             answerKey: q.answerKey?.trim() || null,
             explanation: q.explanation?.trim() || null,
             tags: q.tags.slice(0, 8),

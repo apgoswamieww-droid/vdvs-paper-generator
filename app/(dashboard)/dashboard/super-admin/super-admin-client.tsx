@@ -117,6 +117,7 @@ function formatDate(date: Date | string) {
     day: "2-digit",
     month: "short",
     year: "numeric",
+    timeZone: "UTC",
   });
 }
 
@@ -486,6 +487,7 @@ export function SuperAdminClient({
                         day: "2-digit",
                         month: "short",
                         year: "numeric",
+                        timeZone: "UTC",
                       })}
                     </TableCell>
                     <TableCell className="text-right">

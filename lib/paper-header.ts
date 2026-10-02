@@ -75,9 +75,91 @@ export type HeaderDividerRow = {
   color: string; // hex
 };
 
-export type HeaderRow = HeaderCellsRow | HeaderDividerRow;
+/**
+ * A bordered meta-data box: Section / Class / Subject / Date / Duration /
+ * Marks, each field independently toggleable. Public-facing values (class,
+ * subject, date…) come from the token context at render time; only the
+ * School-section text is stored here.
+ */
+export type HeaderMetaGridRow = {
+  id: string;
+  type: "metaGrid";
+  /** School-section line, e.g. "SHIVAY". */
+  section: string;
+  showSection: boolean;
+  showClass: boolean;
+  showDate: boolean;
+  showDuration: boolean;
+  showTotalMarks: boolean;
+  showSubject: boolean;
+  /** Label + frame color. */
+  color: string; // hex
+};
 
-export type HeaderConfig = { rows: HeaderRow[] };
+export type HeaderRow = HeaderCellsRow | HeaderDividerRow | HeaderMetaGridRow;
+
+// ------------------------------------------------------------
+//  Canvas layout (v2) — free-positioned blocks used by the visual
+//  designer. Blocks carry percentage geometry (x / y / w of the
+//  canvas) so the same inline styles render identically in the
+//  React preview canvas and the Puppeteer PDF HTML.
+// ------------------------------------------------------------
+
+export type HeaderBlockKind = "branding" | "identity" | "metaGrid";
+
+export type HeaderBlockBase = {
+  id: string;
+  kind: HeaderBlockKind;
+  /** left edge — % of canvas width */
+  x: number;
+  /** top edge — % of canvas height */
+  y: number;
+  /** width — % of canvas width */
+  w: number;
+  /** text/content alignment inside the block */
+  align: HeaderAlign;
+  visible: boolean;
+};
+
+/** Block A — school logo (+ optional contact line). */
+export type HeaderBrandingBlock = HeaderBlockBase & {
+  kind: "branding";
+  logoHeight: number; // px
+  showContact: boolean;
+};
+
+/** Block B — school name + address lines (token-aware). */
+export type HeaderIdentityBlock = HeaderBlockBase & {
+  kind: "identity";
+  nameText: string;
+  addressText: string;
+  fontSize: number; // pt — school name size
+  color: string; // hex — school name color
+};
+
+/** Block C — the boxed meta grid (Section / Class / Subject / Date / …). */
+export type HeaderMetaGridBlock = HeaderBlockBase & {
+  kind: "metaGrid";
+  section: string;
+  showSection: boolean;
+  showClass: boolean;
+  showDate: boolean;
+  showDuration: boolean;
+  showTotalMarks: boolean;
+  showSubject: boolean;
+  color: string; // hex
+};
+
+export type HeaderBlock = HeaderBrandingBlock | HeaderIdentityBlock | HeaderMetaGridBlock;
+
+export type HeaderCanvasLayout = {
+  version: 2;
+  /** canvas height in px — reserves the exact space in print */
+  height: number;
+  blocks: HeaderBlock[];
+};
+
+export type HeaderConfig = { rows: HeaderRow[]; canvas?: HeaderCanvasLayout };
 
 export const EMPTY_HEADER: HeaderConfig = { rows: [] };
 
@@ -93,6 +175,19 @@ export const HEADER_LIMITS = {
   widthMax: 8,
   gapMin: 0,
   gapMax: 48,
+} as const;
+
+/** Authoring limits for the canvas designer — mirrored in lib/validations.ts. */
+export const CANVAS_LIMITS = {
+  maxBlocks: 8,
+  heightMin: 80,
+  heightMax: 480,
+  xMin: 0,
+  xMax: 100,
+  yMin: 0,
+  yMax: 100,
+  wMin: 5,
+  wMax: 100,
 } as const;
 
 export const HEADER_FONT_OPTIONS: { value: HeaderFontFamily; label: string }[] = [
@@ -164,6 +259,10 @@ export function newHeaderCellId(): string {
   return nextId("hc");
 }
 
+export function newHeaderBlockId(): string {
+  return nextId("hb");
+}
+
 // ------------------------------------------------------------
 //  Factories
 // ------------------------------------------------------------
@@ -205,6 +304,22 @@ export function newCellsRow(cells: HeaderCell[] = []): HeaderCellsRow {
 
 export function newDividerRow(style: HeaderDividerStyle = "single", color = "#02015c"): HeaderDividerRow {
   return { id: newHeaderRowId(), type: "divider", style, color };
+}
+
+export function newMetaGridRow(overrides: Partial<HeaderMetaGridRow> = {}): HeaderMetaGridRow {
+  return {
+    id: newHeaderRowId(),
+    type: "metaGrid",
+    section: "SHIVAY",
+    showSection: true,
+    showClass: true,
+    showDate: true,
+    showDuration: true,
+    showTotalMarks: true,
+    showSubject: false,
+    color: "#02015c",
+    ...overrides,
+  };
 }
 
 // ------------------------------------------------------------
@@ -288,6 +403,35 @@ export function buildHeaderContext(input: HeaderContextInput): HeaderTokenContex
     schoolAddress: input.school.address || "",
     schoolPhone: input.school.phone || "",
   };
+}
+
+// ------------------------------------------------------------
+//  Boxed meta grid — the bordered field box (Section / Class / …)
+// ------------------------------------------------------------
+
+export type HeaderMetaCell = { key: string; label: string; value: string };
+
+/**
+ * The cells a metaGrid row shows, honoring its visibility toggles. Cells whose
+ * value would be blank are dropped so the box never shows a hollow field.
+ * Shared by the React preview, the PDF HTML and the Word table.
+ */
+export function headerMetaGridCells(
+  row: Pick<HeaderMetaGridRow, "section" | "showSection" | "showClass" | "showDate" | "showDuration" | "showTotalMarks" | "showSubject">,
+  ctx: HeaderTokenContext
+): HeaderMetaCell[] {
+  const items: { key: string; label: string; value: string; show: boolean }[] = [
+    { key: "section", label: "Section", value: row.section, show: row.showSection },
+    { key: "class", label: "Class / Standard", value: ctx.className, show: row.showClass },
+    { key: "subject", label: "Subject", value: ctx.subject, show: row.showSubject },
+    { key: "date", label: "Exam Date", value: ctx.date, show: row.showDate },
+    { key: "duration", label: "Time / Duration", value: ctx.duration, show: row.showDuration },
+    { key: "totalMarks", label: "Max. Marks", value: ctx.totalMarks, show: row.showTotalMarks },
+  ];
+
+  return items
+    .filter((i) => i.show && i.value.trim() !== "")
+    .map(({ key, label, value }) => ({ key, label, value }));
 }
 
 // ------------------------------------------------------------
@@ -420,6 +564,24 @@ export function normalizeHeaderConfig(raw: unknown): HeaderConfig {
       continue;
     }
 
+    if (o.type === "metaGrid") {
+      const bool = (v: unknown, fallback: boolean): boolean =>
+        typeof v === "boolean" ? v : fallback;
+      out.push({
+        id: typeof o.id === "string" && o.id ? o.id : newHeaderRowId(),
+        type: "metaGrid",
+        section: typeof o.section === "string" ? o.section.slice(0, 80) : "SHIVAY",
+        showSection: bool(o.showSection, true),
+        showClass: bool(o.showClass, true),
+        showDate: bool(o.showDate, true),
+        showDuration: bool(o.showDuration, true),
+        showTotalMarks: bool(o.showTotalMarks, true),
+        showSubject: bool(o.showSubject, false),
+        color: safeColor(o.color, "#02015c"),
+      });
+      continue;
+    }
+
     if (o.type === "cells" && Array.isArray(o.cells)) {
       const cells = o.cells
         .slice(0, HEADER_LIMITS.maxCellsPerRow)
@@ -451,16 +613,109 @@ export function normalizeHeaderConfig(raw: unknown): HeaderConfig {
   return { rows: out };
 }
 
-/** Keeps only the fields the schema/DB should persist. */
+/**
+ * Keeps only the fields the schema/DB should persist — rows and/or canvas.
+ */
 export function toPersistedHeaderConfig(config: HeaderConfig): HeaderConfig {
-  return normalizeHeaderConfig(config);
+  const out = normalizeHeaderConfig(config);
+  if (config && typeof config === "object" && "canvas" in config && config.canvas) {
+    out.canvas = normalizeCanvasLayout(config.canvas);
+  }
+  return out;
+}
+
+/**
+ * Coerces a stored/incoming header JSON for reading: keeps the canvas layout
+ * as-is (normalized) and upgrades legacy flat items to row cells.
+ */
+export function normalizeStoredHeaderConfig(raw: unknown): HeaderConfig {
+  if (isCanvasHeader(raw)) {
+    return { rows: [], canvas: normalizeCanvasLayout((raw as { canvas?: unknown }).canvas) };
+  }
+  return normalizeHeaderConfig(raw);
+}
+
+// ------------------------------------------------------------
+//  Canvas normalization — coerces stored designer JSON
+// ------------------------------------------------------------
+
+function normalizeBase(raw: Record<string, unknown>): Pick<HeaderBlockBase, "id" | "x" | "y" | "w" | "align" | "visible"> {
+  return {
+    id: typeof raw.id === "string" && raw.id ? raw.id : newHeaderBlockId(),
+    x: clampPercent(raw.x, 0, CANVAS_LIMITS.xMin, CANVAS_LIMITS.xMax),
+    y: clampPercent(raw.y, 0, CANVAS_LIMITS.yMin, CANVAS_LIMITS.yMax),
+    w: clampPercent(raw.w, 100, CANVAS_LIMITS.wMin, CANVAS_LIMITS.wMax),
+    align: safeAlign(raw.align, "center"),
+    visible: raw.visible !== false,
+  };
+}
+
+function normalizeCanvasBlock(raw: unknown): HeaderBlock | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const base = normalizeBase(o);
+  const bool = (v: unknown, fallback: boolean): boolean => (typeof v === "boolean" ? v : fallback);
+  const color = (v: unknown): string => safeColor(v, "#02015c");
+
+  if (o.kind === "branding") {
+    return {
+      ...base,
+      kind: "branding",
+      logoHeight: clamp(Number(o.logoHeight), HEADER_LIMITS.logoHeightMin, HEADER_LIMITS.logoHeightMax, 72),
+      showContact: bool(o.showContact, false),
+    };
+  }
+  if (o.kind === "identity") {
+    return {
+      ...base,
+      kind: "identity",
+      nameText: typeof o.nameText === "string" ? o.nameText.slice(0, 300) : "",
+      addressText: typeof o.addressText === "string" ? o.addressText.slice(0, 500) : "",
+      fontSize: clamp(Number(o.fontSize), HEADER_LIMITS.fontSizeMin, HEADER_LIMITS.fontSizeMax, 18),
+      color: color(o.color),
+    };
+  }
+  if (o.kind === "metaGrid") {
+    return {
+      ...base,
+      kind: "metaGrid",
+      section: typeof o.section === "string" ? o.section.slice(0, 80) : "SHIVAY",
+      showSection: bool(o.showSection, true),
+      showClass: bool(o.showClass, true),
+      showDate: bool(o.showDate, true),
+      showDuration: bool(o.showDuration, true),
+      showTotalMarks: bool(o.showTotalMarks, true),
+      showSubject: bool(o.showSubject, false),
+      color: color(o.color),
+    };
+  }
+  return null;
+}
+
+export function normalizeCanvasLayout(raw: unknown): HeaderCanvasLayout {
+  if (!raw || typeof raw !== "object") return { version: 2, height: 220, blocks: [] };
+  const o = raw as { height?: unknown; blocks?: unknown };
+  const blocks = Array.isArray(o.blocks) ? o.blocks : [];
+  return {
+    version: 2,
+    height: clamp(Number(o.height), CANVAS_LIMITS.heightMin, CANVAS_LIMITS.heightMax, 220),
+    blocks: blocks
+      .slice(0, CANVAS_LIMITS.maxBlocks)
+      .map(normalizeCanvasBlock)
+      .filter((b): b is HeaderBlock => b !== null),
+  };
+}
+
+/** Detects whether a stored config uses the canvas (v2) layout. */
+export function isCanvasHeader(config: unknown): boolean {
+  return Boolean(config && typeof config === "object" && (config as { canvas?: unknown }).canvas);
 }
 
 // ------------------------------------------------------------
 //  Layout presets — one click to a well-aligned header
 // ------------------------------------------------------------
 
-export type HeaderPresetId = "logo-left" | "split" | "classic" | "minimal";
+export type HeaderPresetId = "logo-left" | "split" | "classic" | "minimal" | "boxed";
 
 export type HeaderPreset = {
   id: HeaderPresetId;
@@ -611,6 +866,44 @@ export const HEADER_PRESETS: HeaderPreset[] = [
       ],
     }),
   },
+  {
+    id: "boxed",
+    label: "Boxed meta bar",
+    description: "Logo + school name, then a bordered grid for Section, Class, Date, Time and Marks.",
+    build: (school) => {
+      const rows: HeaderRow[] = [];
+
+      const nameCell = newTextCell(
+        {
+          text: school.name || "School Name",
+          fontSize: 18,
+          fontFamily: "Rasa",
+          bold: true,
+          color: "#02015c",
+        },
+        "center"
+      );
+
+      if (school.logoUrl) {
+        rows.push(
+          newCellsRow([
+            { ...newLogoCell(72, "center"), width: "auto" },
+            { ...nameCell, width: "fill" },
+          ])
+        );
+      } else {
+        rows.push(newCellsRow([nameCell]));
+      }
+
+      const contact = contactLine(school);
+      if (contact) {
+        rows.push(newCellsRow([newTextCell({ text: contact, fontSize: 10.5, color: "#555555" })]));
+      }
+
+      rows.push(newMetaGridRow());
+      return { rows };
+    },
+  },
 ];
 
 /**
@@ -620,6 +913,171 @@ export const HEADER_PRESETS: HeaderPreset[] = [
 export function defaultHeaderFromSchool(school: SchoolHeaderProfile): HeaderConfig {
   const preset = HEADER_PRESETS.find((p) => p.id === (school.logoUrl ? "logo-left" : "classic"));
   return preset ? preset.build(school) : { rows: [] };
+}
+
+/**
+ * One-way upgrade: flattens rows into canvas blocks so existing headers can be
+ * edited in the visual designer. Logo cells → branding block, text lines →
+ * one identity block (first line = name, rest = address), metaGrid row →
+ * bottom meta block. Dividers are dropped (the print CSS adds its own rule).
+ */
+export function canvasLayoutFromRows(config: HeaderConfig): HeaderCanvasLayout {
+  const rows = normalizeHeaderConfig(config).rows;
+  let hasLogo = false;
+  let logoHeight = 72;
+  let logoAlign: HeaderAlign = "center";
+  let metaRow: HeaderMetaGridRow | null = null;
+  const textLines: { text: string; fontSize: number; color: string }[] = [];
+
+  for (const row of rows) {
+    if (row.type === "metaGrid") {
+      metaRow = row;
+      continue;
+    }
+    if (row.type !== "cells") continue;
+    for (const cell of row.cells) {
+      if (cell.content.type === "logo") {
+        hasLogo = true;
+        logoHeight = cell.content.height;
+        logoAlign = cell.align;
+      } else if (cell.content.text.trim()) {
+        textLines.push({
+          text: cell.content.text.trim(),
+          fontSize: cell.content.fontSize,
+          color: cell.content.color,
+        });
+      }
+    }
+  }
+
+  const blocks: HeaderBlock[] = [];
+
+  if (hasLogo) {
+    const x = logoAlign === "left" ? 0 : logoAlign === "right" ? 72 : 38;
+    blocks.push({
+      id: newHeaderBlockId(),
+      kind: "branding",
+      x,
+      y: 0,
+      w: 28,
+      align: logoAlign,
+      visible: true,
+      logoHeight,
+      showContact: false,
+    });
+  }
+
+  const stackedWithLogo = hasLogo && logoAlign === "center";
+  const sideOffset = hasLogo && logoAlign === "left" ? 26 : hasLogo && logoAlign === "right" ? 0 : 0;
+  blocks.push({
+    id: newHeaderBlockId(),
+    kind: "identity",
+    x: sideOffset,
+    y: stackedWithLogo ? 32 : hasLogo ? 0 : 2,
+    w: stackedWithLogo || !hasLogo ? 100 : sideOffset === 0 ? 74 : 74 - sideOffset,
+    align: hasLogo && logoAlign !== "center" ? logoAlign : "center",
+    visible: true,
+    nameText: textLines[0]?.text ?? "",
+    addressText: textLines.slice(1).map((l) => l.text).join("\n"),
+    fontSize: textLines[0]?.fontSize ?? 18,
+    color: textLines[0]?.color ?? "#02015c",
+  });
+
+  if (metaRow) {
+    blocks.push({
+      id: newHeaderBlockId(),
+      kind: "metaGrid",
+      x: 0,
+      y: 56,
+      w: 100,
+      align: "center",
+      visible: true,
+      section: metaRow.section,
+      showSection: metaRow.showSection,
+      showClass: metaRow.showClass,
+      showDate: metaRow.showDate,
+      showDuration: metaRow.showDuration,
+      showTotalMarks: metaRow.showTotalMarks,
+      showSubject: metaRow.showSubject,
+      color: metaRow.color,
+    });
+  }
+
+  const height = Math.round(
+    (hasLogo ? 120 : 44) + (metaRow ? 88 : 0) + (textLines.length > 1 ? 24 : 0) + 12
+  );
+
+  return {
+    version: 2,
+    height: clamp(height, CANVAS_LIMITS.heightMin, CANVAS_LIMITS.heightMax, 220),
+    blocks,
+  };
+}
+
+/**
+ * The canvas a brand-new paper starts from: logo beside the (token-driven)
+ * school name, with the boxed meta bar across the bottom.
+ */
+export function defaultCanvasFromSchool(school: SchoolHeaderProfile, withMeta = true): HeaderCanvasLayout {
+  const contact = [school.address, school.phone].filter(Boolean).join("  •  ");
+  const blocks: HeaderBlock[] = [];
+  const hasLogo = Boolean(school.logoUrl);
+
+  if (hasLogo) {
+    blocks.push({
+      id: newHeaderBlockId(),
+      kind: "branding",
+      x: 0,
+      y: 0,
+      w: 30,
+      align: "left",
+      visible: true,
+      logoHeight: 76,
+      showContact: false,
+    });
+  }
+
+  blocks.push({
+    id: newHeaderBlockId(),
+    kind: "identity",
+    x: hasLogo ? 32 : 0,
+    y: hasLogo ? 0 : 2,
+    w: hasLogo ? 68 : 100,
+    align: hasLogo ? "left" : "center",
+    visible: true,
+    nameText: "{{schoolName}}",
+    addressText: contact ? "{{schoolAddress}}  •  {{schoolPhone}}" : "",
+    fontSize: 18,
+    color: "#02015c",
+  });
+
+  if (withMeta) {
+    blocks.push({
+      id: newHeaderBlockId(),
+      kind: "metaGrid",
+      x: 0,
+      y: hasLogo ? 52 : 56,
+      w: 100,
+      align: "center",
+      visible: true,
+      section: school.name ? school.name.split(/\s+/).slice(0, 2).join(" ").toUpperCase() : "SHIVAY",
+      showSection: true,
+      showClass: true,
+      showDate: true,
+      showDuration: true,
+      showTotalMarks: true,
+      showSubject: false,
+      color: "#02015c",
+    });
+  }
+
+  const height = (hasLogo ? 64 : 40) + (withMeta ? 88 : 0) + 40;
+
+  return {
+    version: 2,
+    height: clamp(height, CANVAS_LIMITS.heightMin, CANVAS_LIMITS.heightMax, 220),
+    blocks,
+  };
 }
 
 // ------------------------------------------------------------
@@ -638,7 +1096,7 @@ export function headerFontCss(family: HeaderFontFamily): string {
   }
 }
 
-export function headerTextAlignCss(align: HeaderAlign): string {
+export function headerTextAlignCss(align: HeaderAlign): "left" | "right" | "center" {
   switch (align) {
     case "left":
       return "left";
@@ -664,6 +1122,15 @@ export function headerVerticalAlignCss(vAlign: HeaderVAlign): string {
 export function headerCellFlex(width: HeaderCellWidth): string {
   if (width === "auto") return "0 1 auto";
   return `${width === "fill" ? 1 : width} 1 0%`;
+}
+
+/** Cross-axis alignment for column-flexed canvas blocks. */
+export function headerAlignItemsCss(align: HeaderAlign): string {
+  return align === "left" ? "flex-start" : align === "right" ? "flex-end" : "center";
+}
+
+export function clampPercent(value: unknown, fallback: number, min = 0, max = 100): number {
+  return clamp(Number(value), min, max, fallback);
 }
 
 // ============================================================
@@ -701,6 +1168,10 @@ export function headerConfigToHTML(
   ctx: HeaderTokenContext,
   logoUrl: string | null
 ): string {
+  if (isCanvasHeader(config)) {
+    return headerCanvasToHTML(normalizeCanvasLayout((config as { canvas?: unknown }).canvas), ctx, logoUrl);
+  }
+
   const normalized = normalizeHeaderConfig(config);
   const parts: string[] = [];
 
@@ -713,6 +1184,13 @@ export function headerConfigToHTML(
             ? "1px dashed"
             : "1px solid";
       parts.push(`<div style="border-bottom:${border} ${row.color};margin:6px 0;"></div>`);
+      continue;
+    }
+
+    if (row.type === "metaGrid") {
+      const metaCells = headerMetaGridCells(row, ctx);
+      if (metaCells.length === 0) continue;
+      parts.push(headerMetaGridHTML(metaCells, row.color));
       continue;
     }
 
@@ -732,4 +1210,75 @@ export function headerConfigToHTML(
   }
 
   return parts.join("");
+}
+
+/** The bordered meta-data grid (same mark-up for rows and canvas blocks). */
+export function headerMetaGridHTML(cells: HeaderMetaCell[], color: string): string {
+  return (
+    `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));` +
+    `width:100%;box-sizing:border-box;` +
+    `border-top:1.5px solid ${color};border-left:1.5px solid ${color};margin:8px 0;">` +
+    cells
+      .map(
+        (c) =>
+          `<div style="padding:5px 10px;border-right:1.5px solid ${color};border-bottom:1.5px solid ${color};">` +
+          `<div style="font-size:7.5pt;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:${color};">${escapeHTML(c.label)}</div>` +
+          `<div style="font-size:10.5pt;font-weight:700;color:#1a1a1a;">${escapeHTML(c.value)}</div>` +
+          `</div>`
+      )
+      .join("") +
+    `</div>`
+  );
+}
+
+function headerBlockToHTML(block: HeaderBlock, ctx: HeaderTokenContext, logoUrl: string | null): string {
+  const base = `position:absolute;display:flex;flex-direction:column;box-sizing:border-box;` +
+    `left:${block.x}%;top:${block.y}%;width:${block.w}%;` +
+    `text-align:${headerTextAlignCss(block.align)};align-items:${headerAlignItemsCss(block.align)};`;
+
+  if (block.kind === "branding") {
+    const logo = logoUrl
+      ? `<img src="${escapeHTML(logoUrl)}" alt="logo" style="height:${block.logoHeight}px;width:auto;max-width:100%;display:block;object-fit:contain;"/>`
+      : `<div style="height:${block.logoHeight}px;"></div>`;
+    const contact = block.showContact
+      ? `<div style="font-family:'Nunito','Noto Sans',Arial,sans-serif;font-size:9pt;color:#555555;margin-top:4px;white-space:pre-line;">${escapeHTML(
+          resolveHeaderTokens("{{schoolAddress}}  •  {{schoolPhone}}", ctx)
+        ).replace(/\n/g, "<br/>")}</div>`
+      : "";
+    return `<div style="${base}">${logo}${contact}</div>`;
+  }
+
+  if (block.kind === "identity") {
+    const name = `<div style="font-family:'Rasa',Georgia,serif;font-size:${block.fontSize}pt;font-weight:700;color:${block.color};line-height:1.2;white-space:pre-line;">${escapeHTML(
+      resolveHeaderTokens(block.nameText, ctx)
+    ).replace(/\n/g, "<br/>")}</div>`;
+    const address = block.addressText.trim()
+      ? `<div style="font-family:'Nunito','Noto Sans',Arial,sans-serif;font-size:9.5pt;color:#555555;line-height:1.4;margin-top:2px;white-space:pre-line;">${escapeHTML(
+          resolveHeaderTokens(block.addressText, ctx)
+        ).replace(/\n/g, "<br/>")}</div>`
+      : "";
+    return `<div style="${base}">${name}${address}</div>`;
+  }
+
+  const cells = headerMetaGridCells(block, ctx);
+  if (cells.length === 0) return "";
+  return `<div style="${base}">${headerMetaGridHTML(cells, block.color)}</div>`;
+}
+
+/**
+ * Canvas header HTML. The container carries an explicit width/height and
+ * position:relative so the percentage-positioned blocks reserve the exact
+ * space in print — nothing overlaps the question title below.
+ */
+export function headerCanvasToHTML(layout: HeaderCanvasLayout, ctx: HeaderTokenContext, logoUrl: string | null): string {
+  const h = Math.round(layout.height);
+  const blocks = layout.blocks
+    .filter((b) => b.visible)
+    .map((b) => headerBlockToHTML(b, ctx, logoUrl))
+    .join("");
+  return (
+    `<div style="position:relative;width:100%;height:${h}px;margin:0 0 12px;page-break-inside:avoid;">` +
+    blocks +
+    `</div>`
+  );
 }

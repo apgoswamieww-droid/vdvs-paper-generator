@@ -92,6 +92,12 @@ enum ImportStatus {
   FAILED
 }
 
+// What kind of bulk import an audit row records.
+enum ImportKind {
+  QUESTION
+  STUDENT
+}
+
 enum PaperGenerationMode {
   MANUAL     // Teacher selects questions manually
   BLUEPRINT  // System auto-picks based on rules
@@ -122,6 +128,7 @@ enum SubmissionStatus {
 model QuestionImport {
   id           String       @id @default(cuid())
   fileName     String
+  kind         ImportKind   @default(QUESTION)
   status       ImportStatus @default(PENDING)
   totalCount   Int          @default(0)
   successCount Int          @default(0)
@@ -161,6 +168,7 @@ model School {
   academicYear         String?     // e.g. "2026-27"
   watermarkText        String?     // default watermark for the PDF engine
   defaultInstructions  String?     @db.Text // default exam instructions for new papers
+  headerConfig         Json?       // reusable header design for new papers (canvas or rows)
   allowSelfRegistration Boolean  @default(false) // allow open student/teacher sign-up
   teacherCanEdit       Boolean     @default(true) // teachers may create/edit papers
   mediums              Medium[]    @default([ENGLISH, GUJARATI]) // enabled mediums for papers
@@ -191,6 +199,9 @@ model User {
   avatarUrl     String?
   role          UserRole  @default(TEACHER)
   isActive      Boolean   @default(true)
+  // Set for bulk-imported students: the dashboard forces a password
+  // change on first login until they set their own.
+  mustChangePassword Boolean @default(false)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -214,6 +225,9 @@ model User {
   // AI question review workflow
   assignedQuestions Question[] @relation("AssignedTeacherQuestions")
   reviewedQuestions Question[] @relation("ReviewedQuestions")
+
+  // Teacher: subjects this teacher can see / author questions for
+  assignedSubjects TeacherSubject[]
 
   @@index([schoolId])
   @@index([classLevelId])
@@ -306,11 +320,27 @@ model Subject {
   chapters  Chapter[]
   questions Question[]
   papers    Paper[]
+  teacherAssignments TeacherSubject[]
 
   @@unique([classLevelId, name, medium])
   @@index([schoolId])
   @@index([classLevelId])
   @@map("subjects")
+}
+
+// Teacher ↔ Subject assignments (a teacher may teach several subjects).
+// Drives which questions a teacher sees in the bank, paper builder and
+// AI review queue.
+model TeacherSubject {
+  teacherId String
+  subjectId String
+
+  teacher User    @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@id([teacherId, subjectId])
+  @@index([subjectId])
+  @@map("teacher_subjects")
 }
 
 model Chapter {

@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { formatDateISO } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -194,7 +195,7 @@ export function PapersClient({
                       </Badge>
                     </TableCell>
                     <TableCell className="text-muted-foreground text-sm">
-                      {new Date(paper.createdAt).toLocaleDateString()}
+                      {formatDateISO(paper.createdAt)}
                     </TableCell>
                     <TableCell className="text-right">
                       <Button

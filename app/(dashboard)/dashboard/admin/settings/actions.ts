@@ -2,8 +2,11 @@
 
 import { z } from "zod";
 import { revalidatePath } from "next/cache";
+import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { resolveAdminScope } from "../scope";
+import { toPersistedHeaderConfig, type HeaderConfig } from "@/lib/paper-header";
+import { headerConfigSchema } from "@/lib/validations";
 
 // ============================================================
 //  SCHOOL SETTINGS — tenant-scoped advanced configuration
@@ -34,6 +37,7 @@ const sectionSchema = z.union([
     section: z.literal("papers"),
     defaultInstructions: z.string().trim().max(5000).nullish(),
     watermarkText: z.string().trim().max(100).nullish(),
+    headerConfig: headerConfigSchema.nullish(),
   }),
   z.object({
     section: z.literal("permissions"),
@@ -73,6 +77,14 @@ export async function updateSchoolSettings(raw: unknown): Promise<SettingsAction
             ? {
                 defaultInstructions: parsed.data.defaultInstructions || null,
                 watermarkText: parsed.data.watermarkText || null,
+                ...(parsed.data.headerConfig === undefined
+                  ? {}
+                  : {
+                      headerConfig:
+                        parsed.data.headerConfig === null
+                          ? Prisma.JsonNull
+                          : (toPersistedHeaderConfig(parsed.data.headerConfig as HeaderConfig) as unknown as Prisma.InputJsonValue),
+                    }),
               }
             : {
                 allowSelfRegistration: parsed.data.allowSelfRegistration,

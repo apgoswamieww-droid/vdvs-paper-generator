@@ -12,6 +12,7 @@
 
 import {
   borderlessTable,
+  borderedTable,
   buildDocx,
   buildDocumentXml,
   imageExtension,
@@ -21,17 +22,25 @@ import {
   PAGE_BREAK,
   type DocxImage,
   type DocxTableCell,
+  type Run,
 } from "@/lib/docx";
 import { mmToTwips, pageDimensions, type PageConfig } from "@/lib/paper-page";
 import {
+  headerMetaGridCells,
+  isCanvasHeader,
+  normalizeCanvasLayout,
   normalizeHeaderConfig,
   resolveHeaderTokens,
+  type HeaderCanvasLayout,
   type HeaderCell,
   type HeaderCellsRow,
   type HeaderConfig,
+  type HeaderMetaGridRow,
   type HeaderTokenContext,
 } from "@/lib/paper-header";
-import { parseMatchPairs, parseMcqOptions } from "@/lib/question-options";
+import { correctMcqLabels, parseMatchPairs, parseMcqOptions } from "@/lib/question-options";
+import { displaySectionInstructions } from "@/lib/section-instructions";
+import { type PaperDocumentType } from "@/lib/paper-document";
 
 export type DocxLogo = DocxImage & { widthPt: number; heightPt: number };
 
@@ -73,6 +82,12 @@ export type DocxBuildOptions = {
   includeAnswerKey: boolean;
   pageConfig: PageConfig;
   logo?: DocxLogo | null;
+  /**
+   * Which document to render. "paper" (the default) is the question paper;
+   * "answer-key" and "solution" are standalone documents that carry only the
+   * header plus the answers/solutions — never the paper body.
+   */
+  documentType?: PaperDocumentType;
 };
 
 const NAVY = "02015C";
@@ -124,7 +139,7 @@ function sectPrFor(config: PageConfig): string {
 }
 
 export function buildPaperDocx(paper: DocxPaper, options: DocxBuildOptions): Uint8Array {
-  const { pageConfig, includeAnswerKey } = options;
+  const { pageConfig, includeAnswerKey, documentType = "paper" } = options;
   const fs = pageConfig.fontScale;
   const lh = pageConfig.lineHeight;
   const size = (pt: number) => Math.max(14, Math.round(pt * 2 * fs));
@@ -135,13 +150,19 @@ export function buildPaperDocx(paper: DocxPaper, options: DocxBuildOptions): Uin
 
   // Only embed the image when the header actually renders a logo —
   // otherwise the package would carry an unused media part.
+  const canvasHeader = isCanvasHeader(paper.headerConfig);
+  const canvasLayout = canvasHeader
+    ? normalizeCanvasLayout((paper.headerConfig as { canvas?: unknown }).canvas)
+    : null;
   const headerConfig = normalizeHeaderConfig(paper.headerConfig);
-  const hasLogoRow = headerConfig.rows.some(
-    (row) => row.type === "cells" && row.cells.some((c) => c.content.type === "logo")
-  );
+  const hasLogo = canvasLayout
+    ? canvasLayout.blocks.some((b) => b.kind === "branding")
+    : headerConfig.rows.some(
+        (row) => row.type === "cells" && row.cells.some((c) => c.content.type === "logo")
+      );
 
   let logoRelId: string | null = null;
-  if (options.logo && hasLogoRow) {
+  if (options.logo && hasLogo) {
     images.push({
       fileName: `logo.${imageExtension(options.logo.contentType)}`,
       data: options.logo.data,
@@ -165,34 +186,18 @@ export function buildPaperDocx(paper: DocxPaper, options: DocxBuildOptions): Uin
       logoRelId,
       fs,
       lh,
-      contentWidthTwips
+      contentWidthTwips,
+      canvasLayout
     )
   );
 
-  // ── Title block ──
-  out.push(
-    para([{ text: paper.title, bold: true, size: size(15), color: NAVY }], 60, {
-      align: "center",
-      lineSpacing: lh,
-    })
-  );
-
-  const meta = [
-    paper.subject?.name,
-    paper.subject?.classLevel?.name,
-    paper.totalMarks ? `Total Marks: ${paper.totalMarks}` : null,
-    paper.duration ? `Duration: ${paper.duration} min` : null,
-  ]
-    .filter(Boolean)
-    .join("   •   ");
-
-  if (meta) {
-    out.push(
-      para([{ text: meta, size: size(9.5), color: GRAY }], 160, {
-        align: "center",
-        lineSpacing: lh,
-      })
-    );
+  // ── Standalone documents (answer key / solution) ──
+  // Exported as their own Word files: the header above is kept, the paper body
+  // is not.
+  if (documentType !== "paper") {
+    out.push(...standaloneBody(paper, documentType, size, lh, contentWidthTwips));
+    const documentXml = buildDocumentXml(out.join(""), sectPrFor(pageConfig));
+    return buildDocx(documentXml, images);
   }
 
   // ── Instructions ──
@@ -206,30 +211,36 @@ export function buildPaperDocx(paper: DocxPaper, options: DocxBuildOptions): Uin
   }
 
   // ── Sections ──
+  // Continuous numbering across sections — must match the PDF, the previews
+  // and the OMR sheet.
+  let questionNumber = 0;
+
   for (const section of paper.sections) {
     out.push(
       para([{ text: section.title, bold: true, size: size(12), color: NAVY }], 40, { lineSpacing: lh })
     );
     out.push(dividerPara("single", "#02015c"));
 
-    if (section.instructions) {
+    const instructions = displaySectionInstructions(section.instructions);
+    if (instructions) {
       out.push(
-        para([{ text: section.instructions, italic: true, size: size(9.5), color: GRAY }], 100, {
+        para([{ text: instructions, italic: true, size: size(9.5), color: GRAY }], 100, {
           lineSpacing: lh,
         })
       );
     }
 
-    section.questions.forEach((sq, i) => {
+    const numbers: number[] = [];
+    section.questions.forEach((sq) => {
       const q = sq.question;
-      const marks = sq.marksOverride ?? q.marks;
+      questionNumber += 1;
+      numbers.push(questionNumber);
 
       out.push(
         para(
           [
-            { text: `${i + 1}.  `, bold: true, size: size(11) },
+            { text: `${questionNumber}.  `, bold: true, size: size(11) },
             { text: q.questionText, size: size(11) },
-            { text: `   [${marks}m]`, size: size(9), color: GRAY },
           ],
           40,
           { lineSpacing: lh }
@@ -272,21 +283,52 @@ export function buildPaperDocx(paper: DocxPaper, options: DocxBuildOptions): Uin
         );
       }
 
-      // Answer key — inline or collected for a separate page
-      if (includeAnswerKey && (q.answerKey || q.explanation)) {
-        const parts: string[] = [];
-        if (q.answerKey) parts.push(para([{ text: `Answer: ${q.answerKey}`, size: size(10), color: GREEN }], 30, { indent: 340, lineSpacing: lh }));
-        if (q.explanation) parts.push(para([{ text: `Explanation: ${q.explanation}`, size: size(9.5), color: GRAY }], 30, { indent: 340, lineSpacing: lh }));
-
-        if (pageConfig.answerKeyOnNewPage) {
-          answerKeyOut.push(...parts);
-        } else {
-          out.push(...parts);
+      // Answer key — inline under the question. When the answers go on their
+      // own page they are collected per section after the questions instead, so
+      // they can be grouped and numbered exactly like the printed paper.
+      if (includeAnswerKey && !pageConfig.answerKeyOnNewPage) {
+        if (q.answerKey) {
+          out.push(para([{ text: `Answer: ${q.answerKey}`, size: size(10), color: GREEN }], 30, { indent: 340, lineSpacing: lh }));
+        }
+        if (q.explanation) {
+          out.push(para([{ text: `Explanation: ${q.explanation}`, size: size(9.5), color: GRAY }], 30, { indent: 340, lineSpacing: lh }));
         }
       }
 
       out.push(para([{ text: "" }], 60));
     });
+
+    // Answer key on its own page — mirror the PDF: one block per section, with
+    // each answer carrying the question's continuous number (the same number
+    // the paper prints beside the question).
+    if (includeAnswerKey && pageConfig.answerKeyOnNewPage) {
+      const sectionAnswers: string[] = [];
+      section.questions.forEach((sq, i) => {
+        const q = sq.question;
+        if (!q.answerKey && !q.explanation) return;
+
+        const runs: Run[] = [{ text: `${numbers[i]}.  `, bold: true, size: size(10), color: DARK }];
+        if (q.answerKey) runs.push({ text: `Answer: ${q.answerKey}`, size: size(10), color: GREEN });
+        sectionAnswers.push(para(runs, 30, { indent: 340, lineSpacing: lh }));
+
+        if (q.explanation) {
+          sectionAnswers.push(
+            para([{ text: `Explanation: ${q.explanation}`, size: size(9.5), color: GRAY }], 40, {
+              indent: 520,
+              lineSpacing: lh,
+            })
+          );
+        }
+      });
+
+      if (sectionAnswers.length > 0) {
+        answerKeyOut.push(
+          para([{ text: section.title, bold: true, size: size(11), color: NAVY }], 30, { lineSpacing: lh }),
+          dividerPara("single", "#02015c"),
+          ...sectionAnswers
+        );
+      }
+    }
   }
 
   // ── Answer key on its own page ──
@@ -302,6 +344,183 @@ export function buildPaperDocx(paper: DocxPaper, options: DocxBuildOptions): Uin
 }
 
 // ============================================================
+//  Standalone documents — answer key & solution
+//
+//  The Word mirror of the PDF engine's standalone bodies. Both are
+//  full documents on their own (header + document title), with the
+//  questions numbered per section exactly like the paper.
+// ============================================================
+
+function standaloneBody(
+  paper: DocxPaper,
+  documentType: PaperDocumentType,
+  size: (pt: number) => number,
+  lh: number,
+  contentWidthTwips: number
+): string[] {
+  const isSolution = documentType === "solution";
+  const out: string[] = [];
+
+  out.push(
+    para(
+      [
+        {
+          text: isSolution ? "Solution" : "Answer Key",
+          bold: true,
+          size: size(16),
+          color: NAVY,
+        },
+      ],
+      30,
+      { align: "center", lineSpacing: lh }
+    )
+  );
+  out.push(
+    para([{ text: paper.title, size: size(10), color: GRAY }], 60, {
+      align: "center",
+      lineSpacing: lh,
+    })
+  );
+  out.push(dividerPara("double", "#02015c"));
+
+  let hasContent = false;
+
+  /** Word mirror of the PDF answer-key list: bordered "1 - A" rows. */
+  const answerListTable = (
+    rows: { number: number; answer: string }[],
+    sz: (pt: number) => number,
+    widthTwips: number
+  ): string => {
+    const cellWidth = Math.max(600, Math.floor(widthTwips));
+    return borderedTable(
+      widthTwips,
+      rows.map((row) => [
+        {
+          widthTwips: cellWidth,
+          vAlign: "center" as const,
+          paragraphs: para(
+            [
+              { text: `${row.number} -  `, bold: true, size: sz(10.5), color: DARK },
+              { text: row.answer, size: sz(10.5), color: GREEN },
+            ],
+            0,
+            { lineSpacing: lh }
+          ),
+        },
+      ]),
+      "94a3b8"
+    );
+  };
+
+  // Continuous numbering across sections — matches the paper, the PDF and the
+  // OMR sheet.
+  let questionNumber = 0;
+
+  for (const section of paper.sections) {
+    const body: string[] = [];
+    const listRows: { number: number; answer: string }[] = [];
+
+    section.questions.forEach((sq) => {
+      const q = sq.question;
+      questionNumber += 1;
+
+      if (isSolution) {
+        // Question + its choices first, then the model answer and workings.
+        body.push(
+          para(
+            [
+              { text: `${questionNumber}.  `, bold: true, size: size(11), color: DARK },
+              { text: q.questionText, size: size(11) },
+            ],
+            30,
+            { lineSpacing: lh }
+          )
+        );
+
+        const choices = parseMcqOptions(q.options);
+        if (q.questionType === "MCQ" && choices.length > 0) {
+          // Word has no background shading in this writer, so the correct
+          // option is called out with a tick + green bold text instead.
+          const correct = new Set(correctMcqLabels(choices, q.answerKey));
+          for (const opt of choices) {
+            const isCorrect = correct.has(opt.label);
+            const runs: Run[] = isCorrect
+              ? [
+                  { text: "\u2713  ", bold: true, size: size(10.5), color: GREEN },
+                  { text: `(${opt.label})  ${opt.text}`, bold: true, size: size(10.5), color: GREEN },
+                ]
+              : [{ text: `(${opt.label})  ${opt.text}`, size: size(10.5) }];
+            body.push(para(runs, 20, { indent: isCorrect ? 200 : 340, lineSpacing: lh }));
+          }
+        }
+
+        body.push(
+          q.answerKey
+            ? para([{ text: `Answer: ${q.answerKey}`, size: size(10.5), color: GREEN }], 30, {
+                indent: 340,
+                lineSpacing: lh,
+              })
+            : para(
+                [{ text: "Answer: Not provided", size: size(10.5), color: GRAY }],
+                30,
+                { indent: 340, lineSpacing: lh }
+              )
+        );
+
+        body.push(
+          q.explanation
+            ? para([{ text: `Solution: ${q.explanation}`, size: size(10), color: GRAY }], 60, {
+                indent: 340,
+                lineSpacing: lh,
+              })
+            : para([{ text: "" }], 60)
+        );
+
+        hasContent = true;
+        return;
+      }
+
+      // Answer key — answers only, no explanations (they live in the solution).
+      if (!q.answerKey) return;
+      hasContent = true;
+      listRows.push({ number: questionNumber, answer: q.answerKey });
+    });
+
+    if (body.length > 0 || listRows.length > 0) {
+      out.push(
+        para([{ text: section.title, bold: true, size: size(12), color: NAVY }], 30, {
+          lineSpacing: lh,
+        })
+      );
+      out.push(dividerPara("single", "#02015c"));
+      out.push(...body);
+      if (listRows.length > 0) out.push(answerListTable(listRows, size, contentWidthTwips));
+    }
+  }
+
+  if (!hasContent) {
+    out.push(
+      para(
+        [
+          {
+            text: isSolution
+              ? "This paper has no questions yet."
+              : "No answers have been added to this paper yet.",
+            italic: true,
+            size: size(10),
+            color: GRAY,
+          },
+        ],
+        60,
+        { align: "center", lineSpacing: lh }
+      )
+    );
+  }
+
+  return out;
+}
+
+// ============================================================
 //  School header (structured rows)
 // ============================================================
 
@@ -312,7 +531,8 @@ function headerParagraphs(
   logoRelId: string | null,
   fontScale: number,
   lineHeight: number,
-  contentWidthTwips: number
+  contentWidthTwips: number,
+  canvasLayout: HeaderCanvasLayout | null = null
 ): string[] {
   const out: string[] = [];
   const ctx: HeaderTokenContext = {
@@ -333,11 +553,90 @@ function headerParagraphs(
     schoolPhone: paper.school?.phone ?? "",
   };
 
+  // Canvas (v2) — Word can't do absolute positioning, so blocks are stacked
+  // in stored order (logo → name → meta bar). Documented approximation.
+  if (canvasLayout) {
+    for (const block of canvasLayout.blocks) {
+      if (!block.visible) continue;
+
+      if (block.kind === "branding") {
+        if (logo && logoRelId) {
+          out.push(imageRun(logoRelId, logo.widthPt, logo.heightPt, block.align));
+          out.push(para([{ text: "" }], 20));
+        }
+        if (block.showContact) {
+          const contact = resolveHeaderTokens("{{schoolAddress}}  •  {{schoolPhone}}", ctx).trim();
+          if (contact) {
+            out.push(
+              para([{ text: contact, size: 18, color: GRAY, font: WORD_FONT.Nunito }], 20, {
+                align: block.align,
+                lineSpacing: lineHeight,
+              })
+            );
+          }
+        }
+        continue;
+      }
+
+      if (block.kind === "identity") {
+        const name = resolveHeaderTokens(block.nameText, ctx).trim();
+        if (name) {
+          out.push(
+            para(
+              [
+                {
+                  text: name,
+                  bold: true,
+                  size: Math.max(14, Math.round(block.fontSize * 2 * fontScale)),
+                  color: hexToWord(block.color, NAVY),
+                  font: WORD_FONT.Rasa,
+                },
+              ],
+              40,
+              { align: block.align, lineSpacing: lineHeight }
+            )
+          );
+        }
+        const address = resolveHeaderTokens(block.addressText, ctx).trim();
+        if (address) {
+          out.push(
+            para([{ text: address, size: 18, color: GRAY, font: WORD_FONT.Nunito }], 20, {
+              align: block.align,
+              lineSpacing: lineHeight,
+            })
+          );
+        }
+        continue;
+      }
+
+      // metaGrid block → same bordered table as a row
+      const row: HeaderMetaGridRow = {
+        id: block.id,
+        type: "metaGrid",
+        section: block.section,
+        showSection: block.showSection,
+        showClass: block.showClass,
+        showDate: block.showDate,
+        showDuration: block.showDuration,
+        showTotalMarks: block.showTotalMarks,
+        showSubject: block.showSubject,
+        color: block.color,
+      };
+      out.push(metaGridPara(row, ctx, lineHeight, contentWidthTwips));
+    }
+    return out;
+  }
+
   const rows = config.rows;
   if (rows.length > 0) {
     for (const row of rows) {
       if (row.type === "divider") {
         out.push(dividerPara(row.style, row.color));
+        continue;
+      }
+
+      if (row.type === "metaGrid") {
+        out.push(metaGridPara(row, ctx, lineHeight, contentWidthTwips));
         continue;
       }
 
@@ -369,6 +668,60 @@ function headerParagraphs(
 
 /** Narrowest a header column may get, in twips (~6pt). */
 const MIN_COL_TWIPS = 120;
+
+/**
+ * The boxed meta grid (Section / Class / Date / Time / Marks) as a single-row
+ * Word table whose borders use the grid's color — the DOCX mirror of the PDF
+ * engine's bordered grid and of HeaderRenderer.
+ */
+function metaGridPara(
+  row: HeaderMetaGridRow,
+  ctx: HeaderTokenContext,
+  lineHeight: number,
+  contentWidthTwips: number
+): string {
+  const cells = headerMetaGridCells(row, ctx);
+  if (cells.length === 0) return "";
+
+  const width = Math.max(600, contentWidthTwips);
+  const color = hexToWord(row.color, NAVY);
+  const cellWidth = Math.round(width / cells.length);
+
+  const docxCells: DocxTableCell[] = cells.map((c) => ({
+    widthTwips: cellWidth,
+    vAlign: "center",
+    paragraphs:
+      para(
+        [
+          {
+            text: c.label.toUpperCase(),
+            bold: true,
+            size: 14,
+            color,
+            font: WORD_FONT.Nunito,
+          },
+        ],
+        20,
+        { align: "center", lineSpacing: lineHeight }
+      ) +
+      para(
+        [
+          {
+            text: c.value,
+            bold: true,
+            size: 20,
+            color: DARK,
+            font: WORD_FONT.Nunito,
+          },
+        ],
+        20,
+        { align: "center", lineSpacing: lineHeight }
+      ),
+  }));
+
+  const table = borderlessTable(width, docxCells, color);
+  return `${table}${para([{ text: "" }], 20)}`;
+}
 
 /**
  * Rough natural width of a cell's content, in twips. Word cannot measure text

@@ -9,7 +9,8 @@ import { revalidatePath } from "next/cache";
 import { Prisma, type DifficultyLevel } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { requireSession } from "@/lib/session";
-import { normalizeHeaderConfig, type HeaderConfig } from "@/lib/paper-header";
+import { normalizeStoredHeaderConfig, type HeaderConfig } from "@/lib/paper-header";
+import { teacherSubjectIds } from "@/lib/question-scope";
 import { normalizePageConfig, type PageConfig } from "@/lib/paper-page";
 import {
   createManualPaperSchema,
@@ -50,6 +51,8 @@ export type PaperSchoolProfile = {
   phone: string | null;
   board: string | null;
   academicYear: string | null;
+  /** The school's reusable header design (canvas or rows) — reset target. */
+  headerConfig: HeaderConfig | null;
 };
 
 export type PaperDetailDTO = {
@@ -63,7 +66,6 @@ export type PaperDetailDTO = {
   status: "DRAFT" | "PUBLISHED" | "ARCHIVED";
   generationMode: "MANUAL" | "BLUEPRINT";
   schoolHeader: string | null;
-  headerConfig: HeaderConfig | null;
   pageConfig: PageConfig | null;
   watermarkText: string | null;
   pdfUrl: string | null;
@@ -158,9 +160,6 @@ export async function createManualPaper(
             duration: data.duration || null,
             instructions: data.instructions || null,
             schoolHeader: data.schoolHeader || null,
-            headerConfig: data.headerConfig
-              ? (data.headerConfig as unknown as Prisma.InputJsonValue)
-              : Prisma.JsonNull,
             pageConfig: data.pageConfig
               ? (data.pageConfig as unknown as Prisma.InputJsonValue)
               : Prisma.JsonNull,
@@ -264,9 +263,6 @@ export async function createBlueprintPaper(
             duration: data.duration || null,
             instructions: data.instructions || null,
             schoolHeader: data.schoolHeader || null,
-            headerConfig: data.headerConfig
-              ? (data.headerConfig as unknown as Prisma.InputJsonValue)
-              : Prisma.JsonNull,
             pageConfig: data.pageConfig
               ? (data.pageConfig as unknown as Prisma.InputJsonValue)
               : Prisma.JsonNull,
@@ -341,7 +337,9 @@ export async function createBlueprintPaper(
           const section = await tx.paperSection.create({
             data: {
               title: `${chapterNameFallback(rule)} — ${formatQuestionType(questionType)}`,
-              instructions: `${count} × ${marksEach} marks = ${count * marksEach} marks`,
+              // No auto instructions — the per-section marks already show
+              // beside the title in every view/export.
+              instructions: null,
               order: ruleIdx,
               totalMarks: count * marksEach,
               paperId: createdPaper.id,
@@ -413,11 +411,6 @@ export async function updatePaper(
   if (data.passingMarks !== undefined) updateData.passingMarks = data.passingMarks ? Number(data.passingMarks) : null;
   if (data.instructions !== undefined) updateData.instructions = data.instructions || null;
   if (data.schoolHeader !== undefined) updateData.schoolHeader = data.schoolHeader || null;
-  if (data.headerConfig !== undefined) {
-    updateData.headerConfig = data.headerConfig
-      ? (data.headerConfig as unknown as Prisma.InputJsonValue)
-      : Prisma.DbNull;
-  }
   if (data.pageConfig !== undefined) {
     updateData.pageConfig = data.pageConfig
       ? (data.pageConfig as unknown as Prisma.InputJsonValue)
@@ -495,7 +488,7 @@ export async function publishPaper(id: string): Promise<ActionState> {
 export async function listPapers(
   rawFilters: unknown
 ): Promise<PaginatedResponse<PaperListDTO>> {
-  const { schoolId } = await requireSession();
+  const { schoolId, role, id } = await requireSession();
 
   const filters = (rawFilters ?? {}) as {
     search?: string;
@@ -508,11 +501,22 @@ export async function listPapers(
   const page = Number(filters.page) || 1;
   const pageSize = Number(filters.pageSize) || 20;
 
+  // Teachers only see papers of the subjects assigned to them by the school
+  // admin — the same scope as the question bank. Everyone else sees the
+  // whole school.
+  let subjectScope: Prisma.PaperWhereInput = {};
+  if (role === "TEACHER") {
+    const mySubjects = await teacherSubjectIds(id);
+    subjectScope = { subjectId: { in: mySubjects } };
+  }
+
   const where: Prisma.PaperWhereInput = {
     schoolId,
     ...(filters.search ? { title: { contains: filters.search } } : {}),
     ...(filters.subjectId ? { subjectId: filters.subjectId } : {}),
     ...(filters.status ? { status: filters.status as "DRAFT" | "PUBLISHED" | "ARCHIVED" } : {}),
+    // Spread last so the teacher restriction always wins over any filter.
+    ...subjectScope,
   };
 
   const [total, rows] = await Promise.all([
@@ -588,7 +592,6 @@ export async function getPaperById(id: string): Promise<PaperDetailDTO | null> {
       status: true,
       generationMode: true,
       schoolHeader: true,
-      headerConfig: true,
       pageConfig: true,
       watermarkText: true,
       pdfUrl: true,
@@ -610,6 +613,7 @@ export async function getPaperById(id: string): Promise<PaperDetailDTO | null> {
           phone: true,
           board: true,
           academicYear: true,
+          headerConfig: true,
         },
       },
       createdBy: { select: { id: true, name: true, email: true } },
@@ -661,8 +665,6 @@ export async function getPaperById(id: string): Promise<PaperDetailDTO | null> {
     status: paper.status,
     generationMode: paper.generationMode,
     schoolHeader: paper.schoolHeader,
-    // Legacy flat rows are upgraded to the current row/cell layout on read.
-    headerConfig: paper.headerConfig ? normalizeHeaderConfig(paper.headerConfig) : null,
     pageConfig: paper.pageConfig ? normalizePageConfig(paper.pageConfig) : null,
     watermarkText: paper.watermarkText,
     pdfUrl: paper.pdfUrl,
@@ -671,7 +673,19 @@ export async function getPaperById(id: string): Promise<PaperDetailDTO | null> {
     updatedAt: paper.updatedAt.toISOString(),
     subject: paper.subject,
     createdBy: paper.createdBy,
-    school: paper.school,
+    school: paper.school
+      ? {
+          name: paper.school.name,
+          logoUrl: paper.school.logoUrl,
+          address: paper.school.address,
+          phone: paper.school.phone,
+          board: paper.school.board,
+          academicYear: paper.school.academicYear,
+          headerConfig: paper.school.headerConfig
+            ? normalizeStoredHeaderConfig(paper.school.headerConfig)
+            : null,
+        }
+      : null,
     sections: paper.sections.map((s) => ({
       id: s.id,
       title: s.title,

@@ -6,7 +6,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { AdvancedCustomEditor } from "@/components/editor/advanced-custom-editor";
+import { KaTeXRenderer } from "@/components/shared/katex-text";
 import {
   Select,
   SelectContent,
@@ -59,7 +60,7 @@ function initEditing(row: ReviewQuestionRow): EditingState {
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
-  return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+  return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 }
 
 export function ReviewQueueClient({
@@ -210,35 +211,46 @@ export function ReviewQueueClient({
             <div className="space-y-3 rounded-lg border border-border/60 bg-muted/20 p-4">
               <div className="space-y-1.5">
                 <Label>Question text</Label>
-                <Textarea
-                  rows={3}
-                  value={d.questionText}
-                  onChange={(e) => patchDraft(row, { questionText: e.target.value })}
-                  className="bg-slate-950"
-                />
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <AdvancedCustomEditor
+                    value={d.questionText}
+                    onChange={(v) => patchDraft(row, { questionText: v })}
+                    placeholder={"Type or build the question…\n• Σ → math with live preview\n• OCR → paste a photo/screenshot of text\n• ગુજરાતી → keyboard & transliteration"}
+                  />
+                  <div className="min-h-24 rounded-lg border border-slate-800 bg-slate-950 p-3 text-sm text-slate-200">
+                    {d.questionText ? (
+                      <KaTeXRenderer text={d.questionText} />
+                    ) : (
+                      <span className="text-slate-600">Live preview…</span>
+                    )}
+                  </div>
+                </div>
               </div>
 
               {isMcq && (
                 <div className="space-y-2">
                   <Label>Options — click to mark correct</Label>
                   {d.choices.map((choice, ci) => (
-                    <div key={ci} className="flex items-center gap-2">
-                      <span className="w-5 text-center text-xs font-bold text-muted-foreground">{choice.label}</span>
-                      <Input
-                        value={choice.text}
-                        onChange={(e) =>
-                          patchDraft(row, {
-                            choices: d.choices.map((c, i) => (i === ci ? { ...c, text: e.target.value } : c)),
-                          })
-                        }
-                        className="flex-1 bg-slate-950"
-                      />
+                    <div key={ci} className="flex items-start gap-2">
+                      <span className="mt-2.5 w-5 text-center text-xs font-bold text-muted-foreground">{choice.label}</span>
+                      <div className="min-w-0 flex-1">
+                        <AdvancedCustomEditor
+                          compact
+                          value={choice.text}
+                          onChange={(v) =>
+                            patchDraft(row, {
+                              choices: d.choices.map((c, i) => (i === ci ? { ...c, text: v } : c)),
+                            })
+                          }
+                          placeholder={`Option ${choice.label} — text, $...$ math, ગુજરાતી`}
+                        />
+                      </div>
                       <Button
                         type="button"
                         size="icon"
                         variant="outline"
                         className={cn(
-                          "h-8 w-8",
+                          "mt-1 h-8 w-8 shrink-0",
                           choice.isCorrect ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-400" : "text-muted-foreground"
                         )}
                         onClick={() =>
@@ -289,21 +301,19 @@ export function ReviewQueueClient({
 
               <div className="space-y-1.5">
                 <Label>{isMcq ? "Answer key" : "Model answer"}</Label>
-                <Textarea
-                  rows={2}
+                <AdvancedCustomEditor
                   value={d.answerKey}
-                  onChange={(e) => patchDraft(row, { answerKey: e.target.value })}
-                  className="bg-slate-950"
+                  onChange={(v) => patchDraft(row, { answerKey: v })}
+                  placeholder="Answer key — $...$ math, ગુજરાતી, or typed text"
                 />
               </div>
 
               <div className="space-y-1.5">
                 <Label>Solution / explanation</Label>
-                <Textarea
-                  rows={3}
+                <AdvancedCustomEditor
                   value={d.explanation}
-                  onChange={(e) => patchDraft(row, { explanation: e.target.value })}
-                  className="bg-slate-950"
+                  onChange={(v) => patchDraft(row, { explanation: v })}
+                  placeholder={"Explain the solution…\n• Σ → math with live preview\n• OCR → paste a photo/screenshot of text\n• ગુજરાતી → keyboard & transliteration"}
                 />
               </div>
 

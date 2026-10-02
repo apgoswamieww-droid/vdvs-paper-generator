@@ -3,6 +3,7 @@
 // ============================================================
 
 import { Metadata } from "next";
+import prisma from "@/lib/prisma";
 import { requireSession } from "@/lib/session";
 import { getTaxonomyTree, listQuestions } from "./actions";
 import { QuestionsClient } from "./questions-client";
@@ -13,11 +14,18 @@ export const metadata: Metadata = {
 };
 
 export default async function QuestionsPage() {
-  await requireSession();
+  const session = await requireSession();
 
-  const [initialData, tree] = await Promise.all([
+  const [initialData, tree, teachers] = await Promise.all([
     listQuestions({ page: 1, pageSize: 20 }),
     getTaxonomyTree(),
+    session.role === "TEACHER"
+      ? Promise.resolve([])
+      : prisma.user.findMany({
+          where: { schoolId: session.schoolId, role: "TEACHER", isActive: true },
+          orderBy: { name: "asc" },
+          select: { id: true, name: true },
+        }),
   ]);
 
   return (
@@ -30,7 +38,12 @@ export default async function QuestionsPage() {
           </p>
         </div>
       </div>
-      <QuestionsClient initialData={initialData} tree={tree} />
+      <QuestionsClient
+        initialData={initialData}
+        tree={tree}
+        isAdmin={session.role !== "TEACHER"}
+        teachers={teachers.map((t) => ({ id: t.id, name: t.name ?? t.id }))}
+      />
     </div>
   );
 }

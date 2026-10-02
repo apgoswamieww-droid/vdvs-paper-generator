@@ -6,12 +6,15 @@ import { Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { requireSession } from "@/lib/session";
 import { BLOOM_LEVELS } from "@/lib/validations";
+import { parseMcqLayout } from "@/lib/question-options";
 
 // ============================================================
 //  TEACHER — AI Question Review Queue
 //  A teacher can approve (with optional edits) or reject AI-
-//  generated questions that are assigned to them or unassigned
-//  in their school. Approved questions enter the active bank.
+//  generated questions that were explicitly assigned to them.
+//  Unassigned AI questions are handled by the school admin
+//  (assigned to a teacher for review). Approved questions enter
+//  the active bank.
 // ============================================================
 
 const editSchema = z.object({
@@ -58,9 +61,9 @@ export async function reviewQuestion(raw: unknown): Promise<ReviewActionResult> 
       schoolId: session.schoolId,
       createdByAi: true,
       status: "PENDING",
-      OR: [{ assignedTeacherId: session.id }, { assignedTeacherId: null }],
+      assignedTeacherId: session.id,
     },
-    select: { id: true, questionType: true },
+    select: { id: true, questionType: true, options: true },
   });
   if (!question) {
     return { success: false, error: "This question is not in your review queue." };
@@ -84,7 +87,11 @@ export async function reviewQuestion(raw: unknown): Promise<ReviewActionResult> 
         edits.options !== undefined &&
         edits.options.some((o) => o.isCorrect)
       ) {
-        data.options = { kind: "mcq", choices: edits.options };
+        data.options = {
+          kind: "mcq",
+          choices: edits.options,
+          layout: parseMcqLayout(question.options),
+        };
         if (edits.answerKey === undefined) {
           data.answerKey = edits.options
             .filter((o) => o.isCorrect)

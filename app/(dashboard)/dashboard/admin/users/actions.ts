@@ -24,6 +24,7 @@ const createUserSchema = z.object({
   password: z.string().min(8, "Password must be at least 8 characters."),
   role: z.enum(USER_ROLE_VALUES),
   classLevelId: z.string().trim().optional().nullable(),
+  subjectIds: z.array(z.string()).optional().default([]),
 });
 
 const updateUserSchema = z.object({
@@ -33,6 +34,7 @@ const updateUserSchema = z.object({
   role: z.enum(USER_ROLE_VALUES),
   classLevelId: z.string().trim().optional().nullable(),
   isActive: z.boolean().optional(),
+  subjectIds: z.array(z.string()).optional().default([]),
 });
 
 export type UserActionResult = {
@@ -49,7 +51,7 @@ export async function createUser(raw: unknown): Promise<UserActionResult> {
     if (!parsed.success) {
       return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid input." };
     }
-    const { password, ...data } = parsed.data;
+    const { password, subjectIds: pickedSubjects, ...data } = parsed.data;
 
     // Enforce class-level belongs to the same tenant.
     if (data.classLevelId) {
@@ -60,9 +62,29 @@ export async function createUser(raw: unknown): Promise<UserActionResult> {
       if (!cls) return { success: false, error: "The selected class does not belong to this school." };
     }
 
+    // Subjects (teachers only) must belong to this tenant.
+    const subjectIds = data.role === "TEACHER" ? pickedSubjects : [];
+    if (subjectIds.length > 0) {
+      const found = await prisma.subject.count({
+        where: { id: { in: subjectIds }, schoolId: scope.schoolId },
+      });
+      if (found !== subjectIds.length) {
+        return { success: false, error: "One or more selected subjects do not belong to this school." };
+      }
+    }
+
     const passwordHash = await bcrypt.hash(password, 12);
     const user = await prisma.user.create({
-      data: { ...data, passwordHash, schoolId: scope.schoolId, isActive: true },
+      data: {
+        ...data,
+        passwordHash,
+        schoolId: scope.schoolId,
+        isActive: true,
+        assignedSubjects:
+          subjectIds.length > 0
+            ? { create: subjectIds.map((subjectId) => ({ subject: { connect: { id: subjectId } } })) }
+            : undefined,
+      },
       select: { id: true },
     });
     revalidatePath("/dashboard/admin/users");
@@ -82,7 +104,7 @@ export async function updateUser(raw: unknown): Promise<UserActionResult> {
     if (!parsed.success) {
       return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid input." };
     }
-    const { userId, ...data } = parsed.data;
+    const { userId, subjectIds: pickedSubjects, ...data } = parsed.data;
 
     // The target user must belong to the resolved tenant — cross-school edits are rejected.
     const existing = await prisma.user.findFirst({
@@ -99,16 +121,37 @@ export async function updateUser(raw: unknown): Promise<UserActionResult> {
       if (!cls) return { success: false, error: "The selected class does not belong to this school." };
     }
 
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        name: data.name,
-        email: data.email,
-        role: data.role as UserRole,
-        classLevelId: data.role === "STUDENT" ? data.classLevelId ?? null : null,
-        ...(typeof data.isActive === "boolean" ? { isActive: data.isActive } : {}),
-      },
-    });
+    // Subject assignments (teachers only) must belong to this tenant.
+    const subjectIds = data.role === "TEACHER" ? pickedSubjects : [];
+    if (subjectIds.length > 0) {
+      const found = await prisma.subject.count({
+        where: { id: { in: subjectIds }, schoolId: scope.schoolId },
+      });
+      if (found !== subjectIds.length) {
+        return { success: false, error: "One or more selected subjects do not belong to this school." };
+      }
+    }
+
+    await prisma.$transaction([
+      prisma.teacherSubject.deleteMany({ where: { teacherId: userId } }),
+      prisma.user.update({
+        where: { id: userId },
+        data: {
+          name: data.name,
+          email: data.email,
+          role: data.role as UserRole,
+          classLevelId: data.role === "STUDENT" ? data.classLevelId ?? null : null,
+          ...(typeof data.isActive === "boolean" ? { isActive: data.isActive } : {}),
+        },
+      }),
+      ...(subjectIds.length > 0
+        ? [
+            prisma.teacherSubject.createMany({
+              data: subjectIds.map((subjectId) => ({ teacherId: userId, subjectId })),
+            }),
+          ]
+        : []),
+    ]);
     revalidatePath("/dashboard/admin/users");
     return { success: true, userId };
   } catch (err) {

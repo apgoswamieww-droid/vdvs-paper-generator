@@ -203,26 +203,42 @@ export type DocxTableCell = {
 };
 
 /**
- * A borderless, fixed-layout, single-row table. This is how Word lays content
- * out side by side (a logo next to the school name, for example).
+ * A fixed-layout table with any number of rows. With no border color the
+ * table is invisible — that is how Word lays content out side by side (a
+ * logo next to the school name, for example). Passing a border color turns
+ * every cell edge into a visible rule, which is how the header's boxed meta
+ * grid and the answer-key grid are drawn.
  */
-export function borderlessTable(totalWidthTwips: number, cells: DocxTableCell[]): string {
-  if (cells.length === 0) return "";
+export function borderedTable(
+  totalWidthTwips: number,
+  rows: DocxTableCell[][],
+  borderColor?: string
+): string {
+  const firstRow = rows.find((r) => r.length > 0);
+  if (!firstRow) return "";
 
-  const grid = cells
+  const grid = firstRow
     .map((c) => `<w:gridCol w:w="${Math.max(1, Math.round(c.widthTwips))}"/>`)
     .join("");
 
-  const border = (tag: string) => `<w:${tag} w:val="none" w:sz="0" w:space="0"/>`;
+  const border = (tag: string) =>
+    borderColor
+      ? `<w:${tag} w:val="single" w:sz="8" w:space="0" w:color="${borderColor}"/>`
+      : `<w:${tag} w:val="none" w:sz="0" w:space="0"/>`;
 
-  const row = cells
-    .map((c) => {
-      const width = Math.max(1, Math.round(c.widthTwips));
-      return (
-        `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>` +
-        (c.vAlign ? `<w:vAlign w:val="${c.vAlign}"/>` : "") +
-        `</w:tcPr>${c.paragraphs || "<w:p/>"}</w:tc>`
-      );
+  const trs = rows
+    .map((cells) => {
+      const row = cells
+        .map((c) => {
+          const width = Math.max(1, Math.round(c.widthTwips));
+          return (
+            `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>` +
+            (c.vAlign ? `<w:vAlign w:val="${c.vAlign}"/>` : "") +
+            `</w:tcPr>${c.paragraphs || "<w:p/>"}</w:tc>`
+          );
+        })
+        .join("");
+      return `<w:tr>${row}</w:tr>`;
     })
     .join("");
 
@@ -234,8 +250,17 @@ export function borderlessTable(totalWidthTwips: number, cells: DocxTableCell[])
     ["top", "left", "bottom", "right", "insideH", "insideV"].map(border).join("") +
     `</w:tblBorders></w:tblPr>` +
     `<w:tblGrid>${grid}</w:tblGrid>` +
-    `<w:tr>${row}</w:tr></w:tbl>`
+    `${trs}</w:tbl>`
   );
+}
+
+/** A single-row variant of {@link borderedTable}. */
+export function borderlessTable(
+  totalWidthTwips: number,
+  cells: DocxTableCell[],
+  borderColor?: string
+): string {
+  return borderedTable(totalWidthTwips, [cells], borderColor);
 }
 
 /**

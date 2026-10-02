@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { formatDateISO } from "@/lib/utils";
 import { listRecentQuestions, type RecentQuestionDTO } from "./actions";
 import { KaTeXRenderer } from "@/components/shared/katex-text";
 
@@ -74,7 +75,7 @@ export function RecentQuestions({
                 <p className="mt-0.5 text-[11px] text-slate-600">
                   <span className="font-mono tabular-nums">#{q.code}</span>
                   {" · "}
-                  {q.chapterName ?? "—"} · {new Date(q.createdAt).toLocaleDateString()}
+                  {q.chapterName ?? "—"} · {formatDateISO(q.createdAt)}
                 </p>
               </div>
               <div className="shrink-0 text-right">

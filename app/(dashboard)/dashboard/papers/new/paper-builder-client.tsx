@@ -18,8 +18,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { KaTeXRenderer } from "@/components/shared/katex-text";
-import { Repeat2, Trash2 } from "lucide-react";
-import { HeaderEditor } from "@/components/paper/header-editor";
+import { HeaderRenderer } from "@/components/paper/header-renderer";
+import { Repeat2, Settings, Trash2 } from "lucide-react";
 import { PageSettingsEditor } from "@/components/paper/page-settings-editor";
 import { PaperPreview } from "@/components/paper/paper-preview";
 import { ReplaceQuestionDialog } from "@/components/paper/replace-question-dialog";
@@ -32,7 +32,7 @@ import {
 import { createManualPaper, createBlueprintPaper } from "../actions";
 import type { ActionState } from "@/lib/validations";
 import { MEDIUMS } from "@/lib/validations";
-import { EMPTY_HEADER, buildHeaderContext, type HeaderConfig, type SchoolHeaderProfile } from "@/lib/paper-header";
+import { buildHeaderContext, type HeaderConfig, type SchoolHeaderProfile } from "@/lib/paper-header";
 import { DEFAULT_PAGE_CONFIG, type PageConfig } from "@/lib/paper-page";
 
 // ============================================================
@@ -117,7 +117,7 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
   const [totalMarks, setTotalMarks] = useState("");
   const [passingMarks, setPassingMarks] = useState("");
   const [instructions, setInstructions] = useState(paperDefaults.defaultInstructions);
-  const [headerConfig, setHeaderConfig] = useState<HeaderConfig>(paperDefaults.defaultHeader ?? EMPTY_HEADER);
+  const headerConfig = paperDefaults.defaultHeader;
   const [watermarkText, setWatermarkText] = useState(paperDefaults.watermarkText);
   const [pageConfig, setPageConfig] = useState<PageConfig>(DEFAULT_PAGE_CONFIG);
 
@@ -347,7 +347,6 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
       totalMarks: totalMarks ? Number(totalMarks) : 0,
       passingMarks: passingMarks || undefined,
       instructions,
-      headerConfig,
       pageConfig,
       watermarkText,
     };
@@ -1012,17 +1011,12 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
               </CardHeader>
               <CardContent>
                 <PaperPreview
-                  title={title || "Untitled paper"}
-                  meta={[
-                    totalMarks ? `Total Marks: ${totalMarks}` : null,
-                    duration ? `Duration: ${duration} min` : null,
-                  ]
-                    .filter(Boolean)
-                    .join("  •  ")}
                   instructions={instructions}
                   headerConfig={headerConfig}
                   headerContext={headerContext}
                   logoUrl={paperDefaults.logoUrl}
+                  pageConfig={pageConfig}
+                  columns={pageConfig.columns}
                   sections={sections.map((s) => ({
                     id: s.id,
                     title: s.title,
@@ -1061,15 +1055,24 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label>School Header</Label>
-              <HeaderEditor
-                value={headerConfig}
-                onChange={setHeaderConfig}
-                context={headerContext}
-                logoUrl={paperDefaults.logoUrl}
-                schoolDefault={paperDefaults.defaultHeader}
-                schoolProfile={paperDefaults}
-              />
+              <Label>School Header (from Settings)</Label>
+              <div className="rounded-lg border bg-muted/30 p-3">
+                <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                  <Settings className="h-3.5 w-3.5" />
+                  Your saved header design is applied automatically on print.
+                </div>
+                <HeaderRenderer
+                  config={headerConfig}
+                  context={headerContext}
+                  logoUrl={paperDefaults.logoUrl}
+                />
+                <a
+                  href="/dashboard/admin/settings"
+                  className="mt-2 inline-block text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                >
+                  Edit the default design in Settings →
+                </a>
+              </div>
             </div>
             <Separator />
             <div className="space-y-2">

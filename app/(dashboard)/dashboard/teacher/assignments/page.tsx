@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { formatDateISO } from "@/lib/utils";
 import { listAssignments, type AssignmentDTO } from "../actions";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -107,7 +108,7 @@ export default function AssignmentsPage() {
                       {a.submittedCount}/{a.totalSubmissions}
                     </TableCell>
                     <TableCell className="font-[Nunito] text-muted-foreground">
-                      {new Date(a.endTime).toLocaleDateString()}
+                      {formatDateISO(a.endTime)}
                     </TableCell>
                   </TableRow>
                 ))}

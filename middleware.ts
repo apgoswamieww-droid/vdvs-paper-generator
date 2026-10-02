@@ -93,6 +93,14 @@ export default auth((req) => {
     return NextResponse.redirect(new URL(home, req.url));
   }
 
+  // Bulk-imported students must set their own password before anything
+  // else — every dashboard route except the settings page is blocked.
+  const mustChangePassword =
+    (req.auth?.user as { mustChangePassword?: boolean } | undefined)?.mustChangePassword === true;
+  if (mustChangePassword && !pathname.startsWith("/dashboard/settings")) {
+    return NextResponse.redirect(new URL("/dashboard/settings?force=1", req.url));
+  }
+
   return NextResponse.next();
 });
 

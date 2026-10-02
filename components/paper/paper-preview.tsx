@@ -9,8 +9,17 @@
 import type { ReactNode } from "react";
 import { KaTeXRenderer } from "@/components/shared/katex-text";
 import { HeaderRenderer } from "@/components/paper/header-renderer";
+import { PaperSheet } from "@/components/paper/paper-sheet";
 import type { HeaderConfig, HeaderTokenContext } from "@/lib/paper-header";
-import { parseMatchPairs, parseMcqOptions } from "@/lib/question-options";
+import { isCanvasHeader } from "@/lib/paper-header";
+import { DEFAULT_PAGE_CONFIG, type PageConfig } from "@/lib/paper-page";
+import {
+  mcqOptionsLayout,
+  parseMatchPairs,
+  parseMcqLayout,
+  parseMcqOptions,
+} from "@/lib/question-options";
+import { displaySectionInstructions } from "@/lib/section-instructions";
 import type { QuestionListDTO } from "@/app/(dashboard)/dashboard/questions/actions";
 
 export type PreviewQuestion = {
@@ -31,9 +40,11 @@ type Props = {
   headerConfig: HeaderConfig;
   headerContext: HeaderTokenContext;
   logoUrl: string | null;
-  title?: string;
-  meta?: string;
   instructions?: string | null;
+  /** Page geometry for the sheet — defaults to A4 portrait. */
+  pageConfig?: PageConfig;
+  /** Question layout to hint at (1 = single column, 2 = two columns on print). */
+  columns?: 1 | 2;
   /** Rendered next to each question (e.g. a Replace button). */
   renderQuestionActions?: (sectionId: string, question: PreviewQuestion) => ReactNode;
   className?: string;
@@ -44,9 +55,9 @@ export function PaperPreview({
   headerConfig,
   headerContext,
   logoUrl,
-  title,
-  meta,
   instructions,
+  pageConfig = DEFAULT_PAGE_CONFIG,
+  columns = 1,
   renderQuestionActions,
   className,
 }: Props) {
@@ -54,19 +65,12 @@ export function PaperPreview({
 
   return (
     <div className={className}>
-      <div className="rounded-lg border bg-white p-8 text-black">
-        {headerConfig.rows.length > 0 && (
+      <PaperSheet config={pageConfig}>
+        {headerConfig.rows.length > 0 || isCanvasHeader(headerConfig) ? (
           <HeaderRenderer config={headerConfig} context={headerContext} logoUrl={logoUrl} className="mb-4" />
-        )}
+        ) : null}
 
         <hr className="my-4 border-slate-300" />
-
-        {title && (
-          <div className="text-center">
-            <h2 className="text-xl font-bold">{title}</h2>
-            {meta && <p className="mt-1 text-sm text-slate-600">{meta}</p>}
-          </div>
-        )}
 
         {instructions && (
           <div className="mt-4 rounded border border-slate-200 bg-slate-50 p-3 text-sm">
@@ -81,71 +85,93 @@ export function PaperPreview({
           </p>
         )}
 
-        {sections.map((section) =>
-          section.questions.length === 0 ? null : (
-            <div key={section.id} className="mt-6">
-              <h3 className="mb-3 flex items-baseline gap-2 border-b border-slate-200 pb-1 text-base font-bold">
-                {section.title}
-                <span className="text-xs font-normal text-slate-500">
-                  ({section.questions.reduce((sum, q) => sum + q.question.marks, 0)} marks)
-                </span>
-              </h3>
-              {section.instructions && (
-                <p className="mb-2 text-xs italic text-slate-500">{section.instructions}</p>
-              )}
+        <div
+          style={
+            columns === 2
+              ? { columnCount: 2, columnGap: "2rem", columnRule: "1px solid #1a1a1a", columnFill: "balance" }
+              : undefined
+          }
+        >
+          {sections.map((section, sIdx) => {
+            if (section.questions.length === 0) return null;
+            // Continuous numbering across sections — matches every export.
+            const numberOffset = sections
+              .slice(0, sIdx)
+              .reduce((sum, s) => sum + s.questions.length, 0);
+            return (
+              <div key={section.id} className="mt-6" style={{ breakInside: "avoid" }}>
+                <h3 className="mb-3 flex items-baseline gap-2 border-b border-slate-200 pb-1 text-base font-bold">
+                  {section.title}
+                  <span className="text-xs font-normal text-slate-500">
+                    ({section.questions.reduce((sum, q) => sum + q.question.marks, 0)} marks)
+                  </span>
+                </h3>
+                {displaySectionInstructions(section.instructions) && (
+                  <p className="mb-2 text-xs italic text-slate-500">
+                    {displaySectionInstructions(section.instructions)}
+                  </p>
+                )}
 
-              <div className="space-y-3">
-                {section.questions.map((pq, idx) => {
-                  const q = pq.question;
-                  const choices = parseMcqOptions(q.options);
-                  const pairs = parseMatchPairs(q.options);
+                <div className="space-y-3">
+                  {section.questions.map((pq, idx) => {
+                    const q = pq.question;
+                    const choices = parseMcqOptions(q.options);
+                    const pairs = parseMatchPairs(q.options);
 
-                  return (
-                    <div key={pq.key} className="group flex items-start gap-2">
-                      <span className="shrink-0 text-sm font-semibold">{idx + 1}.</span>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm">
-                          <KaTeXRenderer text={q.questionText} />
+                    return (
+                      <div key={pq.key} className="group flex items-start gap-2">
+                        <span className="shrink-0 text-sm font-semibold">{numberOffset + idx + 1}.</span>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm">
+                            <KaTeXRenderer text={q.questionText} />
+                          </div>
+
+                          {q.questionType === "MCQ" && choices.length > 0 && (
+                            <div
+                              className="mt-1 grid gap-1 text-xs"
+                              style={{
+                                gridTemplateColumns: `repeat(${mcqOptionsLayout(
+                                  choices.map((c) => c.text),
+                                  parseMcqLayout(q.options)
+                                )}, minmax(0, 1fr))`,
+                              }}
+                            >
+                              {choices.map((opt) => (
+                                <div key={opt.label} className="flex gap-1">
+                                  <span className="font-medium">({opt.label})</span>
+                                  <KaTeXRenderer text={opt.text} />
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {q.questionType === "MATCH_THE_FOLLOWING" && pairs.length > 0 && (
+                            <div className="mt-1 space-y-0.5 text-xs text-slate-600">
+                              {pairs.map((p, pi) => (
+                                <p key={pi}>
+                                  {pi + 1}) {p.left} — {p.right}
+                                </p>
+                              ))}
+                            </div>
+                          )}
+
+                          {q.questionType === "NUMERIC" && (
+                            <p className="mt-1 text-xs text-slate-500">Answer: ____________________</p>
+                          )}
                         </div>
 
-                        {q.questionType === "MCQ" && choices.length > 0 && (
-                          <div className="mt-1 grid grid-cols-2 gap-1 text-xs">
-                            {choices.map((opt) => (
-                              <div key={opt.label} className="flex gap-1">
-                                <span className="font-medium">({opt.label})</span>
-                                <KaTeXRenderer text={opt.text} />
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        {q.questionType === "MATCH_THE_FOLLOWING" && pairs.length > 0 && (
-                          <div className="mt-1 space-y-0.5 text-xs text-slate-600">
-                            {pairs.map((p, pi) => (
-                              <p key={pi}>
-                                {pi + 1}) {p.left} — {p.right}
-                              </p>
-                            ))}
-                          </div>
-                        )}
-
-                        {q.questionType === "NUMERIC" && (
-                          <p className="mt-1 text-xs text-slate-500">Answer: ____________________</p>
-                        )}
+                        <div className="flex shrink-0 items-center gap-2">
+                          {renderQuestionActions?.(section.id, pq)}
+                        </div>
                       </div>
-
-                      <div className="flex shrink-0 items-center gap-2">
-                        {renderQuestionActions?.(section.id, pq)}
-                        <span className="text-xs text-slate-400">[{q.marks}m]</span>
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          )
-        )}
-      </div>
+            );
+          })}
+        </div>
+      </PaperSheet>
     </div>
   );
 }

@@ -8,6 +8,7 @@
 
 export type PageSize = "A4" | "A3" | "Letter" | "Legal";
 export type PageOrientation = "portrait" | "landscape";
+export type PageColumns = 1 | 2;
 
 export type PageMargins = {
   top: number; // mm
@@ -24,6 +25,8 @@ export type PageConfig = {
   lineHeight: number;
   showPageNumbers: boolean;
   answerKeyOnNewPage: boolean;
+  /** Question layout: 1 = single column, 2 = two columns (PDF engine). */
+  columns: PageColumns;
 };
 
 export const PAGE_SIZES: {
@@ -41,6 +44,11 @@ export const PAGE_SIZES: {
 export const PAGE_ORIENTATIONS: { value: PageOrientation; label: string }[] = [
   { value: "portrait", label: "Portrait" },
   { value: "landscape", label: "Landscape" },
+];
+
+export const PAGE_COLUMNS: { value: PageColumns; label: string }[] = [
+  { value: 1, label: "Single column" },
+  { value: 2, label: "Two columns" },
 ];
 
 /** Authoring limits. Kept in sync with `pageConfigSchema` in lib/validations.ts. */
@@ -63,6 +71,7 @@ export const DEFAULT_PAGE_CONFIG: PageConfig = {
   lineHeight: 1.5,
   showPageNumbers: true,
   answerKeyOnNewPage: false,
+  columns: 1,
 };
 
 function clamp(n: number, min: number, max: number): number {
@@ -90,10 +99,12 @@ export function normalizePageConfig(raw: unknown): PageConfig {
   const size = PAGE_SIZES.some((s) => s.value === o.size) ? (o.size as PageSize) : d.size;
   const orientation =
     o.orientation === "landscape" || o.orientation === "portrait" ? o.orientation : d.orientation;
+  const columns = o.columns === 1 || o.columns === 2 ? (o.columns as PageColumns) : d.columns;
 
   return {
     size,
     orientation,
+    columns,
     margins: {
       top: clamp(num(margins.top, d.margins.top), PAGE_LIMITS.marginMin, PAGE_LIMITS.marginMax),
       right: clamp(num(margins.right, d.margins.right), PAGE_LIMITS.marginMin, PAGE_LIMITS.marginMax),

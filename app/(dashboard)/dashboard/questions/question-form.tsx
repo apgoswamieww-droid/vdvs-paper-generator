@@ -44,7 +44,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ArrowLeft, Hash } from "lucide-react";
-import { detectNumericConversion } from "@/lib/question-options";
+import {
+  detectNumericConversion,
+  mcqOptionsLayout,
+  parseMcqLayout,
+  OPTION_LAYOUT_LABELS,
+  OPTION_LAYOUT_ORDER,
+  type McqLayoutMode,
+} from "@/lib/question-options";
 
 const TYPE_LABELS: Record<string, string> = {
   MCQ: "MCQ",
@@ -111,6 +118,7 @@ export function QuestionForm({
         previousYearTag: editing.previousYearTag ?? "",
         options: opts.choices ?? [],
         matchPairs: opts.pairs ?? [],
+        layout: parseMcqLayout(editing.options),
       };
     }
     return {
@@ -137,6 +145,7 @@ export function QuestionForm({
         { left: "", right: "" },
         { left: "", right: "" },
       ],
+      layout: "auto",
     };
   }, [editing]);
 
@@ -184,6 +193,7 @@ export function QuestionForm({
   const medium = watch("medium");
   const difficulty = watch("difficulty");
   const optionsValues = watch("options");
+  const layoutMode = (watch("layout") as McqLayoutMode) ?? "auto";
 
   // Auto-set Bloom level when Difficulty changes (create mode only)
   useEffect(() => {
@@ -610,6 +620,54 @@ export function QuestionForm({
             ) : (
               <span className="text-slate-600">Live preview…</span>
             )}
+
+            {/* Options in the selected layout — mirrors the printed paper. */}
+            {questionType === "MCQ" && (optionsValues ?? []).some((o) => o?.text?.trim()) && (
+              <div
+                className="mt-3 grid gap-x-4 gap-y-2"
+                style={{ gridTemplateColumns: `repeat(${mcqOptionsLayout((optionsValues ?? []).map((o) => o?.text ?? ""), layoutMode)}, minmax(0, 1fr))` }}
+              >
+                {(optionsValues ?? [])
+                  .filter((o) => o?.text?.trim())
+                  .map((o) => (
+                    <div
+                      key={o.label}
+                      className={`flex items-baseline gap-1.5 rounded px-1 ${
+                        o.isCorrect ? "bg-emerald-500/10 text-emerald-300" : ""
+                      }`}
+                    >
+                      <span className="shrink-0 font-medium">({o.label})</span>
+                      <span className="min-w-0">
+                        <KaTeXRenderer text={o.text} />
+                      </span>
+                      {o.isCorrect && <span className="shrink-0 text-emerald-400">✓</span>}
+                    </div>
+                  ))}
+              </div>
+            )}
+
+            {/* Match pairs preview */}
+            {questionType === "MATCH_THE_FOLLOWING" &&
+              (matchPairsValues ?? []).some((p) => p?.left?.trim()) && (
+                <div className="mt-3 space-y-1">
+                  {(matchPairsValues ?? [])
+                    .filter((p) => p?.left?.trim())
+                    .map((p, i) => (
+                      <div key={i} className="flex items-baseline gap-1.5 text-[13px]">
+                        <span className="shrink-0 text-slate-400">
+                          ({String.fromCharCode(97 + i)})
+                        </span>
+                        <span className="min-w-0">
+                          <KaTeXRenderer text={p.left} />
+                        </span>
+                        <span className="shrink-0 text-slate-500">→</span>
+                        <span className="min-w-0">
+                          <KaTeXRenderer text={p.right} />
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              )}
           </div>
         </div>
       </div>
@@ -667,6 +725,34 @@ export function QuestionForm({
             </div>
           ))}
           {optionsRootError && <p className="text-xs text-red-400">{optionsRootError}</p>}
+
+          <div className="space-y-1.5 border-t border-slate-800 pt-3">
+            <Label>Option layout</Label>
+            <Select
+              items={OPTION_LAYOUT_ORDER.map((l) => ({
+                value: l,
+                label: OPTION_LAYOUT_LABELS[l],
+              }))}
+              value={(watch("layout") as McqLayoutMode) ?? "auto"}
+              onValueChange={(v) =>
+                v && setValue("layout", v as McqLayoutMode, { shouldValidate: true })
+              }
+            >
+              <SelectTrigger className="w-full bg-slate-950">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {OPTION_LAYOUT_ORDER.map((l) => (
+                  <SelectItem key={l} value={l}>
+                    {OPTION_LAYOUT_LABELS[l]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground">
+              How options are arranged on the printed paper and in previews.
+            </p>
+          </div>
         </div>
       )}
 
