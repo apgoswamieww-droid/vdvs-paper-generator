@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -29,6 +29,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { saveGeneratedQuestions } from "./actions";
+import { GatewayOfflineBanner, GatewayStatusPill, type GatewayState } from "./gateway-status";
 import { cn } from "@/lib/utils";
 import {
   OPTION_LAYOUT_LABELS,
@@ -140,6 +141,53 @@ export function AiGeneratorClient({
   const [expanded, setExpanded] = useState<number | null>(null);
   const [replacingIndex, setReplacingIndex] = useState<number | null>(null);
 
+  // ── AI gateway health ──
+  const [gateway, setGateway] = useState<GatewayState>({
+    online: null,
+    displayUrl: "http://localhost:20128",
+    model: "auto",
+    detail: "",
+  });
+  const [gatewayChecking, setGatewayChecking] = useState(true);
+
+  // One gateway probe → new GatewayState (or null when the probe itself fails).
+  const fetchGatewayStatus = useCallback(async (): Promise<GatewayState | null> => {
+    try {
+      const res = await fetch("/api/ai/status", { cache: "no-store" });
+      const data = (await res.json()) as { gateway?: Omit<GatewayState, "online"> & { online: boolean } };
+      if (data.gateway) {
+        return { ...data.gateway, online: !!data.gateway.online };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // Initial probe on mount — state updates land after the fetch resolves.
+  useEffect(() => {
+    let cancelled = false;
+    void fetchGatewayStatus().then((next) => {
+      if (cancelled) return;
+      if (next) setGateway(next);
+      setGatewayChecking(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchGatewayStatus]);
+
+  // Manual re-check (status pill button) and re-checks after failed
+  // generations — always user/promise-triggered, never in an effect body.
+  const recheckGateway = useCallback(async () => {
+    setGatewayChecking(true);
+    const next = await fetchGatewayStatus();
+    if (next) setGateway(next);
+    setGatewayChecking(false);
+  }, [fetchGatewayStatus]);
+
+  const gatewayDown = !gatewayChecking && gateway.online === false;
+
   const classLevel = useMemo(() => taxonomy.find((c) => c.id === classLevelId) ?? null, [taxonomy, classLevelId]);
   const subject = useMemo(() => classLevel?.subjects.find((s) => s.id === subjectId) ?? null, [classLevel, subjectId]);
   const chapter = useMemo(() => subject?.chapters.find((c) => c.id === chapterId) ?? null, [subject, chapterId]);
@@ -191,7 +239,10 @@ export function AiGeneratorClient({
         | { ok: true; context: GenerationContext; questions: GeneratedQuestion[] }
         | { ok: false; error: string };
       if (!res.ok || !data.ok) {
-        toast.error("error" in data ? data.error : "Could not generate questions.");
+        toast.error("error" in data ? data.error : "Could not generate questions.", {
+          duration: 8000,
+        });
+        void recheckGateway();
         return;
       }
       setContext(data.context);
@@ -206,7 +257,8 @@ export function AiGeneratorClient({
       setExpanded(null);
       toast.success(`Generated ${prepared.length} questions. Review them below.`);
     } catch {
-      toast.error("Could not reach the AI generator. Is OmniRoute running?");
+      toast.error("Could not reach the AI generator. Is the OmniRoute gateway running?");
+      void recheckGateway();
     } finally {
       setGenerating(false);
     }
@@ -312,7 +364,10 @@ export function AiGeneratorClient({
         | { ok: false; error: string };
 
       if (!res.ok || !data.ok) {
-        toast.error("error" in data ? data.error : "Could not generate a replacement.");
+        toast.error("error" in data ? data.error : "Could not generate a replacement.", {
+          duration: 8000,
+        });
+        void recheckGateway();
         return;
       }
 
@@ -342,7 +397,8 @@ export function AiGeneratorClient({
       );
       toast.success("Question replaced.");
     } catch {
-      toast.error("Could not reach the AI generator. Is OmniRoute running?");
+      toast.error("Could not reach the AI generator. Is the OmniRoute gateway running?");
+      void recheckGateway();
     } finally {
       setReplacingIndex(null);
     }
@@ -401,12 +457,17 @@ export function AiGeneratorClient({
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="font-[Rasa] text-3xl font-bold tracking-tight">AI Question Generator</h1>
-        <p className="font-[Nunito] mt-1 text-sm text-muted-foreground">
-          Generate exam questions with local AI, review and route them to teachers for approval.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="font-[Rasa] text-3xl font-bold tracking-tight">AI Question Generator</h1>
+          <p className="font-[Nunito] mt-1 text-sm text-muted-foreground">
+            Generate exam questions with local AI, review and route them to teachers for approval.
+          </p>
+        </div>
+        <GatewayStatusPill gateway={gateway} checking={gatewayChecking} onRecheck={() => void recheckGateway()} />
       </div>
+
+      {gatewayDown && <GatewayOfflineBanner gateway={gateway} />}
 
       {isAudit && (
         <div className="flex items-center gap-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
@@ -589,8 +650,19 @@ export function AiGeneratorClient({
             </div>
           </div>
 
-          <div className="flex items-center justify-end gap-3 border-t border-border/50 pt-4">
-            <Button type="button" onClick={generate} disabled={generating} className="gap-2 font-[Nunito]">
+          <div className="flex flex-wrap items-center justify-end gap-3 border-t border-border/50 pt-4">
+            {gatewayDown && (
+              <p className="mr-auto text-xs text-red-400">
+                Generation is unavailable while the AI gateway is offline.
+              </p>
+            )}
+            <Button
+              type="button"
+              onClick={generate}
+              disabled={generating || gatewayDown}
+              title={gatewayDown ? "Start the OmniRoute gateway, then re-check the status above" : undefined}
+              className="gap-2 font-[Nunito]"
+            >
               {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
               {generating ? "Generating… may take a minute" : `Generate ${quantity} questions`}
             </Button>
@@ -892,8 +964,9 @@ export function AiGeneratorClient({
             {autoApprove ? "" : " PENDING"}.
           </p>
           <div className="mt-4 flex items-center gap-2 text-[11px] text-muted-foreground">
-            <XCircle className="h-3.5 w-3.5" />
-            Require local OmniRoute gateway at <code className="rounded bg-muted px-1 py-0.5">http://localhost:20128</code>
+            <XCircle className={cn("h-3.5 w-3.5", gatewayDown ? "text-red-400" : gateway.online ? "text-emerald-400" : "")} />
+            Require local OmniRoute gateway at <code className="rounded bg-muted px-1 py-0.5">{gateway.displayUrl}</code>
+            {gatewayChecking ? " — checking…" : gateway.online ? " — connected" : " — offline"}
           </div>
         </div>
       )}

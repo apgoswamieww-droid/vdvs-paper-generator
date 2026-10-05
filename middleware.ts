@@ -88,17 +88,18 @@ export default auth((req) => {
     return NextResponse.next();
   }
 
-  // Enforce strict role boundaries inside the dashboard
-  if (role && !isAllowed(pathname, role)) {
-    return NextResponse.redirect(new URL(home, req.url));
-  }
-
   // Bulk-imported students must set their own password before anything
   // else — every dashboard route except the settings page is blocked.
+  // Checked before role boundaries so the funnel takes a single hop.
   const mustChangePassword =
     (req.auth?.user as { mustChangePassword?: boolean } | undefined)?.mustChangePassword === true;
   if (mustChangePassword && !pathname.startsWith("/dashboard/settings")) {
     return NextResponse.redirect(new URL("/dashboard/settings?force=1", req.url));
+  }
+
+  // Enforce strict role boundaries inside the dashboard
+  if (role && !isAllowed(pathname, role)) {
+    return NextResponse.redirect(new URL(home, req.url));
   }
 
   return NextResponse.next();
