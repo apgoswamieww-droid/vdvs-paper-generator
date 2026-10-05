@@ -101,12 +101,7 @@ export function LoginForm() {
       </div>
 
       <Card className="border-border/50 shadow-xl shadow-primary/5">
-        <CardHeader className="pb-0">
-          <p className="font-[Nunito] text-center text-xs text-muted-foreground">
-            Teacher & Student login
-          </p>
-        </CardHeader>
-        <CardContent className="p-6 pt-4">
+        <CardContent className="p-6">
           {error && (
             <div className="mb-4 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               <AlertCircle className="h-4 w-4 shrink-0" />
