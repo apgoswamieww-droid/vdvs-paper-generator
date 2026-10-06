@@ -128,8 +128,11 @@ async function click(el: Element) {
 }
 
 function findTrigger(scope: HTMLElement, text: string): HTMLElement {
-  const el = [...scope.querySelectorAll('[data-slot="select-trigger"]')].find(
-    (t) => (t.textContent ?? "").trim() === text
+  // Base UI's SelectIcon appends a literal "▼" glyph to the trigger,
+  // so match on containment (as the other select tests do) rather
+  // than on exact textContent equality.
+  const el = [...scope.querySelectorAll<HTMLElement>('[data-slot="select-trigger"]')].find(
+    (t) => (t.textContent ?? "").includes(text)
   );
   if (!el) throw new Error(`No select trigger with text "${text}"`);
   return el;

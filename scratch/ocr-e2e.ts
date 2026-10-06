@@ -25,8 +25,8 @@ function chromePath(): string {
   return found;
 }
 
-function waitForText(page: Page, text: string, timeout = 20000): Promise<void> {
-  return page.waitForFunction(
+async function waitForText(page: Page, text: string, timeout = 20000): Promise<void> {
+  await page.waitForFunction(
     (needle: string) => document.body.innerText.includes(needle),
     { timeout },
     text
@@ -44,7 +44,9 @@ async function main() {
   let uploadBytes = 0;
   try {
     const page = await browser.newPage();
-    page.on("pageerror", (error) => console.log("[pageerror]", error.message));
+    page.on("pageerror", (error) =>
+      console.log("[pageerror]", error instanceof Error ? error.message : String(error))
+    );
     page.on("request", (request) => {
       if (request.url().endsWith("/api/ocr") && request.method() === "POST") {
         uploadBytes = Buffer.byteLength(request.postData() ?? "", "utf8");
