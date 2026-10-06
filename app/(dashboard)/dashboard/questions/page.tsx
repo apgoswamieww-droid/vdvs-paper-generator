@@ -6,6 +6,7 @@ import { Metadata } from "next";
 import prisma from "@/lib/prisma";
 import { requireSession } from "@/lib/session";
 import { getTaxonomyTree } from "./actions";
+import { parseListState } from "./list-state";
 import { QuestionsClient } from "./questions-client";
 
 export const metadata: Metadata = {
@@ -13,8 +14,17 @@ export const metadata: Metadata = {
   description: "Browse, search and manage your school's question bank.",
 };
 
-export default async function QuestionsPage() {
+interface QuestionsPageProps {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export default async function QuestionsPage({ searchParams }: QuestionsPageProps) {
   const session = await requireSession();
+
+  // Returning from an edit carries the table state in the URL — restoring it
+  // here (server-side) keeps the first client render identical to the SSR
+  // markup, so the listing resumes on the same page it was left on.
+  const initialListState = parseListState(await searchParams);
 
   // Questions are loaded on demand only (search, filter or "All") — the
   // page itself never prefetches the bank.
@@ -43,6 +53,7 @@ export default async function QuestionsPage() {
         tree={tree}
         isAdmin={session.role !== "TEACHER"}
         teachers={teachers.map((t) => ({ id: t.id, name: t.name ?? t.id }))}
+        initialState={initialListState}
       />
     </div>
   );

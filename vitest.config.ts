@@ -1,7 +1,8 @@
 import path from "node:path";
 import { defineConfig } from "vitest/config";
 
-// Unit-test config — pure Node tests (no React rendering yet).
+// Unit-test config — Node tests by default; DOM tests opt in with a
+// `// @vitest-environment jsdom` docblock (see tests/taxonomy-select.test.tsx).
 // `@/` mirrors the tsconfig path alias so tests import app modules
 // exactly like production code does.
 export default defineConfig({
@@ -11,7 +12,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/**/*.test.{ts,tsx}"],
     environment: "node",
   },
 });

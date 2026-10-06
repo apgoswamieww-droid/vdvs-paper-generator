@@ -182,6 +182,9 @@ model School {
   imports       QuestionImport[]
   subscription  Subscription?
   assignments   PaperAssignment[]
+  headerTemplates HeaderTemplate[]
+  notifications Notification[]
+  notificationPreferences NotificationPreference[]
 
   @@map("schools")
 }
@@ -228,6 +231,10 @@ model User {
 
   // Teacher: subjects this teacher can see / author questions for
   assignedSubjects TeacherSubject[]
+
+  // Notifications
+  notifications      Notification[]
+  pushSubscriptions  PushSubscription[]
 
   @@index([schoolId])
   @@index([classLevelId])
@@ -479,6 +486,18 @@ model Paper {
   pageConfig   Json?              // page size / orientation / margins / density
   watermarkText String?           // watermark text for the PDF
 
+  // ── Multiple sets (Set A / Set B …) ──
+  // Exports generate each set on the fly: question order within sections and
+  // MCQ option order are reshuffled per set with a seed (paper id + set index),
+  // so every set prints with its own answer key, solution and OMR sheet.
+  setCount Int @default(1)
+
+  // ── Reusable heading template ──
+  // Named header this paper prints with; exports fall back to the school's
+  // default headerConfig when null.
+  headerTemplateId String?
+  headerTemplate   HeaderTemplate? @relation(fields: [headerTemplateId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -506,11 +525,14 @@ model Paper {
 // ============================================================
 
 model PaperSection {
-  id           String  @id @default(cuid())
-  title        String // e.g., "Section A"
+  id        String   @id @default(cuid())
+  title     String // e.g., "Section A"
   instructions String?
-  order        Int     @default(0)
+  order     Int     @default(0)
   totalMarks   Float   @default(0)
+  // Marks deducted for a wrong answer (0 / null = no negative marking).
+  // Used by the competitive-exam presets (JEE, NEET, GUJCET …).
+  negativeMarks Float?
 
   paperId String
   paper   Paper  @relation(fields: [paperId], references: [id], onDelete: Cascade)
@@ -519,6 +541,35 @@ model PaperSection {
 
   @@index([paperId])
   @@map("paper_sections")
+}
+
+// ============================================================
+//  HEADING TEMPLATE LIBRARY
+//  Named, reusable paper headers (custom designs + exam presets).
+//  A paper points at one via Paper.headerTemplateId; exports fall
+//  back to the school's default headerConfig when it is null.
+// ============================================================
+
+enum HeaderTemplateKind {
+  CUSTOM // designed by the school in the header builder
+  EXAM // built-in competitive-exam preset (JEE / NEET / GUJCET …)
+}
+
+model HeaderTemplate {
+  id        String   @id @default(cuid())
+  name      String // e.g., "Unit Test — GSEB", "JEE Main"
+  kind      HeaderTemplateKind @default(CUSTOM)
+  config    Json // HeaderConfig { rows, canvas? } — see lib/paper-header.ts
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  schoolId String
+  school   School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  papers   Paper[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+  @@map("header_templates")
 }
 
 // ============================================================
@@ -655,4 +706,70 @@ model Answer {
   @@index([questionId])
   @@index([graderId])
   @@map("answers")
+}
+
+// ============================================================
+//  NOTIFICATIONS — in-app feed + web push + (optional) email
+// ============================================================
+
+enum NotificationType {
+  QUESTION_ASSIGNED  // a question was routed to this teacher for review
+  QUESTION_REVIEWED  // teacher approved/rejected → tell the admins
+  QUESTION_UNASSIGNED // AI question saved with no reviewer → admins must assign
+  REVIEW_REMINDER    // still PENDING after N hours → nudge the teacher
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  schoolId  String
+  userId    String // recipient
+  type      NotificationType
+  title     String
+  body      String?
+  data      Json? // { url, questionIds[] }
+  readAt    DateTime?
+  dedupeKey String? // e.g. reminder:<questionId>:<bucket> — NULL = no dedupe
+  createdAt DateTime         @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  // Postgres treats NULLs as distinct, so ordinary rows are unaffected.
+  @@unique([userId, dedupeKey])
+  @@index([userId, readAt])
+  @@index([schoolId, createdAt])
+  @@map("notifications")
+}
+
+model PushSubscription {
+  id         String   @id @default(cuid())
+  userId     String
+  endpoint   String   @unique
+  p256dh     String
+  auth       String
+  platform   String   @default("WEB") // "WEB" today → "RN" (FCM) once the app exists
+  userAgent  String?
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_subscriptions")
+}
+
+model NotificationPreference {
+  id            String           @id @default(cuid())
+  schoolId      String
+  event         NotificationType
+  inApp         Boolean          @default(true)
+  push          Boolean          @default(true)
+  email         Boolean          @default(false)
+  reminderHours Int              @default(24) // only used by REVIEW_REMINDER
+  updatedAt     DateTime         @updatedAt
+
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@unique([schoolId, event])
+  @@map("notification_preferences")
 }

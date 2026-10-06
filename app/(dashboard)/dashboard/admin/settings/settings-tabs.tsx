@@ -10,15 +10,27 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { ShieldAlert, Upload, X, Save } from "lucide-react";
+import { ShieldAlert, Upload, X, Save, Bell } from "lucide-react";
 import type { PlanTier } from "@/types";
-import { updateSchoolSettings } from "./actions";
+import type { NotificationType } from "@prisma/client";
+import { updateSchoolSettings, sendTestNotification } from "./actions";
+import {
+  deleteHeaderTemplate,
+  saveHeaderTemplate,
+  type HeaderTemplateDTO,
+} from "../../papers/actions";
 import { HeaderBuilderCanvas } from "@/components/paper/header-builder-canvas";
 import {
   buildHeaderContext,
   defaultCanvasFromSchool,
   type HeaderConfig,
 } from "@/lib/paper-header";
+import {
+  NOTIFICATION_EVENTS,
+  defaultsFor,
+  type ChannelPrefs,
+} from "@/lib/notification-events";
+import { showLocalNotification } from "@/lib/push-client";
 
 export type SchoolSettingsValue = {
   name: string;
@@ -49,11 +61,21 @@ const MEDIUM_OPTIONS = [
   { value: "GUJARATI", label: "Gujarati" },
 ] as const;
 
+const CHANNELS: { key: "inApp" | "push" | "email"; label: string; hint: string }[] = [
+  { key: "inApp", label: "In-app", hint: "Bell badge and toast inside the app." },
+  { key: "push", label: "Push", hint: "Browser notification — needs the recipient to allow push." },
+  { key: "email", label: "Email", hint: "Sent through the school SMTP settings." },
+];
+
 export function SettingsTabs({
   school,
+  templates: initialTemplates,
+  notificationPrefs: initialNotificationPrefs,
   auditSchoolId,
 }: {
   school: SchoolSettingsValue;
+  templates: HeaderTemplateDTO[];
+  notificationPrefs: { event: NotificationType; prefs: ChannelPrefs }[];
   auditSchoolId: string | null;
 }) {
   const router = useRouter();
@@ -91,6 +113,57 @@ export function SettingsTabs({
     canvas: defaultCanvasFromSchool(schoolProfile),
   };
   const [headerConfig, setHeaderConfig] = useState<HeaderConfig>(initialHeader);
+
+  // Tab 3b — the reusable heading-template library (save / load / delete)
+  const [templates, setTemplates] = useState<HeaderTemplateDTO[]>(initialTemplates);
+  const [templateName, setTemplateName] = useState("");
+  const [templateBusy, setTemplateBusy] = useState(false);
+
+  async function saveCurrentAsTemplate() {
+    const name = templateName.trim();
+    if (!name) {
+      toast.error("Give the template a name first.");
+      return;
+    }
+    setTemplateBusy(true);
+    try {
+      const saved = await saveHeaderTemplate({ name, config: headerConfig });
+      if ("error" in saved) {
+        toast.error(saved.error);
+      } else {
+        setTemplates((prev) => [
+          ...prev.filter((t) => t.id !== saved.id && t.name !== saved.name),
+          saved,
+        ]);
+        setTemplateName("");
+        toast.success(`Template "${saved.name}" saved.`);
+      }
+    } catch {
+      toast.error("Could not save the template.");
+    } finally {
+      setTemplateBusy(false);
+    }
+  }
+
+  async function removeTemplate(template: HeaderTemplateDTO) {
+    if (!window.confirm(`Delete the template "${template.name}"? Papers using it fall back to the school default header.`)) {
+      return;
+    }
+    setTemplateBusy(true);
+    try {
+      const result = await deleteHeaderTemplate(template.id);
+      if (result.success) {
+        setTemplates((prev) => prev.filter((t) => t.id !== template.id));
+        toast.success("Template deleted.");
+      } else {
+        toast.error(result.error || "Could not delete the template.");
+      }
+    } catch {
+      toast.error("Could not delete the template.");
+    } finally {
+      setTemplateBusy(false);
+    }
+  }
   const headerContext = useMemo(
     () =>
       buildHeaderContext({
@@ -110,6 +183,55 @@ export function SettingsTabs({
     allowSelfRegistration: school.allowSelfRegistration,
     teacherCanEdit: school.teacherCanEdit,
   });
+
+  // Tab 5 — Notifications (one channel set per event)
+  const [notifPrefs, setNotifPrefs] = useState<Record<NotificationType, ChannelPrefs>>(() => {
+    const map = {} as Record<NotificationType, ChannelPrefs>;
+    for (const ev of NOTIFICATION_EVENTS) map[ev.value] = defaultsFor(ev.value);
+    for (const row of initialNotificationPrefs) map[row.event] = { ...row.prefs };
+    return map;
+  });
+  const [testBusy, setTestBusy] = useState(false);
+
+  function toggleChannel(event: NotificationType, key: "inApp" | "push" | "email") {
+    setNotifPrefs((current) => ({
+      ...current,
+      [event]: { ...current[event], [key]: !current[event][key] },
+    }));
+  }
+
+  function setReminderHours(value: number) {
+    const hours = Number.isFinite(value) ? Math.min(720, Math.max(1, Math.round(value))) : 24;
+    setNotifPrefs((current) => ({
+      ...current,
+      REVIEW_REMINDER: { ...current.REVIEW_REMINDER, reminderHours: hours },
+    }));
+  }
+
+  async function sendTest() {
+    setTestBusy(true);
+    try {
+      const result = await sendTestNotification();
+      if (!result.success) {
+        toast.error(result.error ?? "Could not send the test notification.");
+        return;
+      }
+      const shown = await showLocalNotification({
+        title: "Test notification",
+        body: "Notifications are working for your school.",
+        url: "/dashboard/notifications",
+      });
+      toast.success(
+        shown
+          ? "Sent — you should see the browser popup and your feed."
+          : "Sent to your notification feed. Allow browser push to also get the popup."
+      );
+    } catch {
+      toast.error("Could not send the test notification.");
+    } finally {
+      setTestBusy(false);
+    }
+  }
 
   const [savingSection, setSavingSection] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -187,6 +309,16 @@ export function SettingsTabs({
     await save("permissions", perms);
   }
 
+  async function saveNotifications(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    await save("notifications", {
+      entries: NOTIFICATION_EVENTS.map((ev) => ({
+        event: ev.value,
+        prefs: notifPrefs[ev.value],
+      })),
+    });
+  }
+
   const switchRow = (label: string, description: string, checked: boolean, onChange: (v: boolean) => void) => (
     <div className="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-muted/30 px-4 py-3">
       <div>
@@ -219,6 +351,7 @@ export function SettingsTabs({
           <TabsTrigger value="academic">Academic Setup</TabsTrigger>
           <TabsTrigger value="papers">Paper Defaults</TabsTrigger>
           <TabsTrigger value="permissions">Permissions & Security</TabsTrigger>
+          <TabsTrigger value="notifications">Notifications</TabsTrigger>
         </TabsList>
 
         {/* ── Tab 1: General & Branding ── */}
@@ -436,6 +569,86 @@ export function SettingsTabs({
                   />
                 </div>
 
+                {/* ── Heading template library ── */}
+                <div className="space-y-3 border-t border-border/50 pt-4">
+                  <div>
+                    <Label>Saved Heading Templates</Label>
+                    <p className="text-[11px] text-muted-foreground">
+                      Save any design as a named template, then pick it on a paper (Create Paper →
+                      Heading Template, or Customize on the paper page).
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Input
+                      value={templateName}
+                      onChange={(e) => setTemplateName(e.target.value)}
+                      placeholder="Template name, e.g. Unit Test — GSEB"
+                      maxLength={80}
+                      className="h-9 max-w-xs flex-1"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void saveCurrentAsTemplate()}
+                      disabled={templateBusy}
+                      className="gap-1.5"
+                    >
+                      <Save className="h-4 w-4" />
+                      {templateBusy ? "Saving…" : "Save current design as template"}
+                    </Button>
+                  </div>
+
+                  {templates.length === 0 ? (
+                    <p className="rounded-lg border border-dashed border-border/60 p-3 text-xs text-muted-foreground">
+                      No templates yet — the design you are editing can be saved above.
+                    </p>
+                  ) : (
+                    <ul className="divide-y divide-border/50 rounded-lg border border-border/60">
+                      {templates.map((t) => (
+                        <li key={t.id} className="flex flex-wrap items-center justify-between gap-2 p-2.5">
+                          <span className="flex items-center gap-2 text-sm">
+                            {t.name}
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${
+                                t.kind === "EXAM"
+                                  ? "bg-violet-500/15 text-violet-300"
+                                  : "bg-sky-500/15 text-sky-300"
+                              }`}
+                            >
+                              {t.kind === "EXAM" ? "Exam" : "Custom"}
+                            </span>
+                          </span>
+                          <span className="flex items-center gap-1.5">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              disabled={templateBusy}
+                              onClick={() => {
+                                setHeaderConfig(t.config);
+                                toast.info(`Loaded "${t.name}" into the editor.`);
+                              }}
+                            >
+                              Load into editor
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              disabled={templateBusy}
+                              className="text-red-400 hover:text-red-300"
+                              onClick={() => void removeTemplate(t)}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </Button>
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
                 <div className="flex items-center justify-end gap-3 border-t border-border/50 pt-4">
                   <Button type="submit" disabled={savingSection === "papers"} className="gap-1.5 font-[Nunito]">
                     <Save className="h-4 w-4" />
@@ -477,6 +690,110 @@ export function SettingsTabs({
                   <Button type="submit" disabled={savingSection === "permissions"} className="gap-1.5 font-[Nunito]">
                     <Save className="h-4 w-4" />
                     {savingSection === "permissions" ? "Saving…" : "Save permissions"}
+                  </Button>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ── Tab 5: Notifications ── */}
+        <TabsContent value="notifications">
+          <Card className="border-border/50">
+            <CardHeader>
+              <CardTitle className="font-[Rasa] text-lg font-semibold">Notification Channels</CardTitle>
+              <CardDescription className="font-[Nunito] text-xs">
+                Choose how each event reaches teachers and admins. Changes apply to notifications
+                sent from now on.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={saveNotifications} className="space-y-4">
+                <div className="space-y-3">
+                  {NOTIFICATION_EVENTS.map((ev) => {
+                    const prefs = notifPrefs[ev.value];
+                    const isReminder = ev.value === "REVIEW_REMINDER";
+                    return (
+                      <div
+                        key={ev.value}
+                        className="rounded-lg border border-border/60 bg-muted/30 px-4 py-3"
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="font-[Nunito] text-sm font-medium">{ev.label}</p>
+                            <p className="text-xs text-muted-foreground">{ev.description}</p>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            {CHANNELS.map((ch) => {
+                              const active = prefs[ch.key];
+                              return (
+                                <button
+                                  key={ch.key}
+                                  type="button"
+                                  title={ch.hint}
+                                  aria-pressed={active}
+                                  onClick={() => toggleChannel(ev.value, ch.key)}
+                                  className={`rounded-md border px-2.5 py-1 font-[Nunito] text-[11px] font-semibold transition-colors ${
+                                    active
+                                      ? "border-secondary bg-secondary/10 text-secondary"
+                                      : "border-border bg-background text-muted-foreground hover:text-foreground"
+                                  }`}
+                                >
+                                  {ch.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {isReminder && (
+                          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/50 pt-3">
+                            <Label htmlFor="rem-hours" className="text-xs text-muted-foreground">
+                              Remind after
+                            </Label>
+                            <Input
+                              id="rem-hours"
+                              type="number"
+                              min={1}
+                              max={720}
+                              value={prefs.reminderHours}
+                              onChange={(e) => setReminderHours(Number(e.target.value))}
+                              className="h-8 w-20 text-center"
+                            />
+                            <span className="font-[Nunito] text-xs text-muted-foreground">
+                              hours still sitting in the review queue
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <p className="rounded-lg border border-dashed border-border/60 px-4 py-3 font-[Nunito] text-[11px] text-muted-foreground">
+                  In-app items land in the header bell. Push needs each person to press &ldquo;Turn
+                  on&rdquo; in the bell menu once per browser. Email needs SMTP to be configured;
+                  the test button never sends mail.
+                </p>
+
+                <div className="flex flex-wrap items-center justify-end gap-3 border-t border-border/50 pt-4">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void sendTest()}
+                    disabled={testBusy}
+                    className="gap-1.5 font-[Nunito]"
+                  >
+                    <Bell className="h-4 w-4" />
+                    {testBusy ? "Sending…" : "Send test notification"}
+                  </Button>
+                  <Button
+                    type="submit"
+                    disabled={savingSection === "notifications"}
+                    className="gap-1.5 font-[Nunito]"
+                  >
+                    <Save className="h-4 w-4" />
+                    {savingSection === "notifications" ? "Saving…" : "Save notification settings"}
                   </Button>
                 </div>
               </form>

@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import { Download, Loader2 } from "lucide-react";
 import { importQuestionsFromDocx, type ImportResult } from "./actions";
 import type { TaxonomyNode } from "../actions";
+import { nodeLabel, taxLabel } from "@/lib/taxonomy-label";
 import { DOCX_TEMPLATE_SAMPLE } from "@/lib/docx-import";
 import { Button } from "@/components/ui/button";
 import { LoadingButton } from "@/components/shared";
@@ -139,7 +140,7 @@ export function ImportDialog({
             <div className="space-y-1.5">
               <Label>Class</Label>
               <Select
-                items={tree.map((c) => ({ value: c.id, label: c.name }))}
+                items={tree.map((c) => ({ value: c.id, label: nodeLabel(c) }))}
                 value={classId || null}
                 onValueChange={(v) => {
                   setClassId(typeof v === "string" ? v : "");
@@ -154,7 +155,7 @@ export function ImportDialog({
                 <SelectContent>
                   {tree.map((c) => (
                     <SelectItem key={c.id} value={c.id}>
-                      {c.name}
+                      {nodeLabel(c)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -164,7 +165,7 @@ export function ImportDialog({
             <div className="space-y-1.5">
               <Label>Subject *</Label>
               <Select
-                items={subjects.map((s) => ({ value: s.id, label: s.name }))}
+                items={subjects.map((s) => ({ value: s.id, label: taxLabel(s.name, s.questionCount) }))}
                 value={subjectId || null}
                 onValueChange={(v) => {
                   setSubjectId(typeof v === "string" ? v : "");
@@ -179,7 +180,7 @@ export function ImportDialog({
                 <SelectContent>
                   {subjects.map((s) => (
                     <SelectItem key={s.id} value={s.id}>
-                      {s.name}
+                      {taxLabel(s.name, s.questionCount)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -189,7 +190,7 @@ export function ImportDialog({
             <div className="space-y-1.5">
               <Label>Chapter *</Label>
               <Select
-                items={chapters.map((c) => ({ value: c.id, label: c.name }))}
+                items={chapters.map((c) => ({ value: c.id, label: taxLabel(c.name, c.questionCount) }))}
                 value={chapterId || null}
                 onValueChange={(v) => {
                   setChapterId(typeof v === "string" ? v : "");
@@ -203,7 +204,7 @@ export function ImportDialog({
                 <SelectContent>
                   {chapters.map((c) => (
                     <SelectItem key={c.id} value={c.id}>
-                      {c.name}
+                      {taxLabel(c.name, c.questionCount)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -213,7 +214,7 @@ export function ImportDialog({
             <div className="space-y-1.5">
               <Label>Topic (optional)</Label>
               <Select
-                items={topics.map((t) => ({ value: t.id, label: t.name }))}
+                items={topics.map((t) => ({ value: t.id, label: taxLabel(t.name, t.questionCount) }))}
                 value={topicId || null}
                 onValueChange={(v) => setTopicId(typeof v === "string" ? v : "")}
                 disabled={!chapterId}
@@ -224,7 +225,7 @@ export function ImportDialog({
                 <SelectContent>
                   {topics.map((t) => (
                     <SelectItem key={t.id} value={t.id}>
-                      {t.name}
+                      {taxLabel(t.name, t.questionCount)}
                     </SelectItem>
                   ))}
                 </SelectContent>

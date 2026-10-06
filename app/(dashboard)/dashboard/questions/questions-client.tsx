@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { formatDateISO } from "@/lib/utils";
+import { nodeLabel, taxLabel } from "@/lib/taxonomy-label";
 import {
   listQuestions,
   deleteQuestion,
@@ -14,6 +15,11 @@ import {
   type QuestionListDTO,
   type TaxonomyNode,
 } from "./actions";
+import {
+  QUESTIONS_LIST_PATH,
+  serializeListState,
+  type QuestionsListState,
+} from "./list-state";
 import type { PaginatedResponse } from "@/types";
 import type { QuestionFilterInput } from "@/lib/validations";
 import { MEDIUMS } from "@/lib/validations";
@@ -96,18 +102,24 @@ export function QuestionsClient({
   tree,
   isAdmin,
   teachers,
+  initialState,
 }: {
   tree: TaxonomyNode[];
   isAdmin: boolean;
   teachers: { id: string; name: string }[];
+  /** Table state carried in the URL when returning from the edit page. */
+  initialState?: QuestionsListState | null;
 }) {
   const router = useRouter();
   const [data, setData] = useState(IDLE_DATA);
   // "idle" = nothing queried yet (prompt + Show all); "list" = fetching/rendering.
-  const [mode, setMode] = useState<"idle" | "list">("idle");
-  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
-  const [searchInput, setSearchInput] = useState("");
-  const [classId, setClassId] = useState("");
+  const [mode, setMode] = useState<"idle" | "list">(initialState ? "list" : "idle");
+  const [filters, setFilters] = useState<Filters>(() => ({
+    ...DEFAULT_FILTERS,
+    ...(initialState?.filters ?? {}),
+  }));
+  const [searchInput, setSearchInput] = useState(initialState?.searchInput ?? "");
+  const [classId, setClassId] = useState(initialState?.classId ?? "");
   const [isPending, startTransition] = useTransition();
 
   // Dialog state
@@ -195,6 +207,14 @@ export function QuestionsClient({
 
   const refetch = () => fetchPage(filters);
 
+  /** Edit URL carrying the current table state, so the listing can resume. */
+  const editHref = (id: string) => {
+    const base = `${QUESTIONS_LIST_PATH}/${id}`;
+    if (mode !== "list") return base;
+    const query = serializeListState({ filters, searchInput, classId });
+    return query ? `${base}?${query}` : base;
+  };
+
   const onDelete = async (q: QuestionListDTO) => {
     setDeletePending(true);
     try {
@@ -236,6 +256,11 @@ export function QuestionsClient({
   };
 
   const { items, meta } = data;
+  // First page of a freshly engaged listing (e.g. restored from the URL) —
+  // the data object is still the untouched idle placeholder, so show the
+  // skeleton instead of a premature "no results" row.
+  const awaitingFirstPage = mode === "list" && data === IDLE_DATA;
+  const loadingRows = isPending || awaitingFirstPage;
   const from = meta.total === 0 ? 0 : (meta.page - 1) * meta.pageSize + 1;
   const to = Math.min(meta.page * meta.pageSize, meta.total);
 
@@ -247,10 +272,10 @@ export function QuestionsClient({
           <Plus className="h-4 w-4" />
           Add Question
         </Button>
-        <Button variant="outline" onClick={() => setImportOpen(true)} className="gap-1.5">
+        {/* <Button variant="outline" onClick={() => setImportOpen(true)} className="gap-1.5">
           <Upload className="h-4 w-4" />
           Import .docx
-        </Button>
+        </Button> */}
         <div className="ml-auto">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -295,7 +320,7 @@ export function QuestionsClient({
                   page: 1,
                 }));
               }}
-              items={tree.map((c) => ({ value: c.id, label: c.name }))}
+              items={tree.map((c) => ({ value: c.id, label: nodeLabel(c) }))}
             />
             <SelectFilter
               placeholder="Subject"
@@ -309,7 +334,7 @@ export function QuestionsClient({
                   page: 1,
                 }))
               }
-              items={subjects.map((s) => ({ value: s.id, label: s.name }))}
+              items={subjects.map((s) => ({ value: s.id, label: taxLabel(s.name, s.questionCount) }))}
               disabled={!classId}
             />
             <SelectFilter
@@ -323,14 +348,14 @@ export function QuestionsClient({
                   page: 1,
                 }))
               }
-              items={chapters.map((c) => ({ value: c.id, label: c.name }))}
+              items={chapters.map((c) => ({ value: c.id, label: taxLabel(c.name, c.questionCount) }))}
               disabled={!filters.subjectId}
             />
             <SelectFilter
               placeholder="Topic"
               value={filters.topicId || null}
               onChange={(v) => setFilter("topicId", v ?? "")}
-              items={topics.map((t) => ({ value: t.id, label: t.name }))}
+              items={topics.map((t) => ({ value: t.id, label: taxLabel(t.name, t.questionCount) }))}
               disabled={!filters.chapterId}
             />
             <div className="h-5 w-px bg-border mx-1" />
@@ -419,253 +444,253 @@ export function QuestionsClient({
             </Button>
           </div>
         ) : (
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <TableHead className="w-20">ID</TableHead>
-                <TableHead>Question</TableHead>
-                <TableHead>Medium</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Difficulty</TableHead>
-                <TableHead className="text-center">Marks</TableHead>
-                <TableHead>Bloom</TableHead>
-                <TableHead>Scope</TableHead>
-                <TableHead>Added</TableHead>
-                <TableHead className="w-16" />
-              </TableRow>
-            </TableHeader>
-            <TableBody className={isPending ? "opacity-50" : ""}>
-              {isPending &&
-                Array.from({ length: 5 }).map((_, i) => (
-                  <TableRow key={`skel-${i}`}>
-                    {Array.from({ length: 10 }).map((__, j) => (
-                      <TableCell key={j}>
-                        <Skeleton className="h-4 w-full" />
-                      </TableCell>
-                    ))}
-                  </TableRow>
-                ))}
-              {!isPending && items.length === 0 && (
-                <TableRow>
-                  <TableCell
-                    colSpan={10}
-                    className="h-32 text-center text-muted-foreground"
-                  >
-                    No questions match these filters.
-                  </TableCell>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="w-20">ID</TableHead>
+                  <TableHead>Question</TableHead>
+                  <TableHead>Medium</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Difficulty</TableHead>
+                  <TableHead className="text-center">Marks</TableHead>
+                  <TableHead>Bloom</TableHead>
+                  <TableHead>Scope</TableHead>
+                  <TableHead>Added</TableHead>
+                  <TableHead className="w-16" />
                 </TableRow>
-              )}
-              {!isPending &&
-                items.map((q) => (
-                  <TableRow
-                    key={q.id}
-                    className="cursor-pointer"
-                    onClick={() => {
-                      setViewId(q.id);
-                      setViewOpen(true);
-                    }}
-                  >
-                    <TableCell className="font-mono text-[11px] tabular-nums text-muted-foreground">
-                      #{q.code}
+              </TableHeader>
+              <TableBody className={loadingRows ? "opacity-50" : ""}>
+                {loadingRows &&
+                  Array.from({ length: 5 }).map((_, i) => (
+                    <TableRow key={`skel-${i}`}>
+                      {Array.from({ length: 10 }).map((__, j) => (
+                        <TableCell key={j}>
+                          <Skeleton className="h-4 w-full" />
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  ))}
+                {!loadingRows && items.length === 0 && (
+                  <TableRow>
+                    <TableCell
+                      colSpan={10}
+                      className="h-32 text-center text-muted-foreground"
+                    >
+                      No questions match these filters.
                     </TableCell>
-                    <TableCell className="max-w-sm">
-                      <div className="line-clamp-2">
-                        <KaTeXRenderer text={q.questionText} />
-                      </div>
-                      <div className="mt-1 flex flex-wrap gap-1">
-                        {q.previousYearTag && (
+                  </TableRow>
+                )}
+                {!loadingRows &&
+                  items.map((q) => (
+                    <TableRow
+                      key={q.id}
+                      className="cursor-pointer"
+                      onClick={() => {
+                        setViewId(q.id);
+                        setViewOpen(true);
+                      }}
+                    >
+                      <TableCell className="font-mono text-[11px] tabular-nums text-muted-foreground">
+                        #{q.code}
+                      </TableCell>
+                      <TableCell className="max-w-sm">
+                        <div className="line-clamp-2">
+                          <KaTeXRenderer text={q.questionText} />
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {q.previousYearTag && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] border-primary/30 text-primary"
+                            >
+                              {q.previousYearTag}
+                            </Badge>
+                          )}
+                          {q.createdByAi && (
+                            <Badge variant="outline" className="text-[10px] border-fuchsia-500/40 text-fuchsia-400">
+                              AI
+                            </Badge>
+                          )}
+                          {q.createdByAi && q.status === "PENDING" && (
+                            <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-400">
+                              Pending
+                            </Badge>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="secondary" className="text-[11px]">
+                          {MEDIUM_LABELS[q.medium] ?? q.medium}
+                        </Badge>
+                        {q.linked && (
                           <Badge
                             variant="outline"
-                            className="text-[10px] border-primary/30 text-primary"
+                            className="mt-1 block w-fit border-emerald-500/40 text-[10px] text-emerald-400"
                           >
-                            {q.previousYearTag}
+                            EN/GUJ Linked
                           </Badge>
                         )}
-                        {q.createdByAi && (
-                          <Badge variant="outline" className="text-[10px] border-fuchsia-500/40 text-fuchsia-400">
-                            AI
-                          </Badge>
-                        )}
-                        {q.createdByAi && q.status === "PENDING" && (
-                          <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-400">
-                            Pending
-                          </Badge>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="secondary" className="text-[11px]">
-                        {MEDIUM_LABELS[q.medium] ?? q.medium}
-                      </Badge>
-                      {q.linked && (
-                        <Badge
-                          variant="outline"
-                          className="mt-1 block w-fit border-emerald-500/40 text-[10px] text-emerald-400"
-                        >
-                          EN/GUJ Linked
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="secondary" className="text-[11px]">
+                          {TYPE_LABELS[q.questionType] ?? q.questionType}
                         </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="secondary" className="text-[11px]">
-                        {TYPE_LABELS[q.questionType] ?? q.questionType}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <span
-                        className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${DIFFICULTY_STYLES[q.difficulty]}`}
-                      >
-                        {q.difficulty[0] +
-                          q.difficulty.slice(1).toLowerCase()}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-center tabular-nums">
-                      {q.marks}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {q.bloomLevel
-                        ? q.bloomLevel[0] +
-                          q.bloomLevel.slice(1).toLowerCase()
-                        : "—"}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {q.subject?.name ?? "—"}
-                      {q.chapter && (
-                        <span className="block text-muted-foreground/60">
-                          {q.chapter.name}
+                      </TableCell>
+                      <TableCell>
+                        <span
+                          className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${DIFFICULTY_STYLES[q.difficulty]}`}
+                        >
+                          {q.difficulty[0] +
+                            q.difficulty.slice(1).toLowerCase()}
                         </span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {formatDateISO(q.createdAt)}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex justify-end gap-0.5">
-                        {canAssign(q) && (
+                      </TableCell>
+                      <TableCell className="text-center tabular-nums">
+                        {q.marks}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {q.bloomLevel
+                          ? q.bloomLevel[0] +
+                          q.bloomLevel.slice(1).toLowerCase()
+                          : "—"}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {q.subject?.name ?? "—"}
+                        {q.chapter && (
+                          <span className="block text-muted-foreground/60">
+                            {q.chapter.name}
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {formatDateISO(q.createdAt)}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex justify-end gap-0.5">
+                          {canAssign(q) && (
+                            <Button
+                              size="icon-xs"
+                              variant="ghost"
+                              aria-label="Assign to a teacher"
+                              title="Assign to a teacher for review"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setAssignTeacherId("");
+                                setAssignTarget(q);
+                              }}
+                              className="text-muted-foreground hover:text-primary"
+                            >
+                              <UserCheck className="h-3 w-3" />
+                            </Button>
+                          )}
+                          {!q.linked && (
+                            <Button
+                              size="icon-xs"
+                              variant="ghost"
+                              aria-label="Add bilingual translation"
+                              title="Add bilingual translation (other medium)"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                router.push(`/dashboard/questions/new?link=${q.id}`);
+                              }}
+                              className="text-muted-foreground hover:text-primary"
+                            >
+                              <Languages className="h-3 w-3" />
+                            </Button>
+                          )}
                           <Button
                             size="icon-xs"
                             variant="ghost"
-                            aria-label="Assign to a teacher"
-                            title="Assign to a teacher for review"
+                            aria-label="View question details"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setAssignTeacherId("");
-                              setAssignTarget(q);
+                              setViewId(q.id);
+                              setViewOpen(true);
                             }}
-                            className="text-muted-foreground hover:text-primary"
                           >
-                            <UserCheck className="h-3 w-3" />
+                            <Eye className="h-3 w-3" />
                           </Button>
-                        )}
-                        {!q.linked && (
                           <Button
                             size="icon-xs"
                             variant="ghost"
-                            aria-label="Add bilingual translation"
-                            title="Add bilingual translation (other medium)"
+                            aria-label="Edit question"
                             onClick={(e) => {
                               e.stopPropagation();
-                              router.push(`/dashboard/questions/new?link=${q.id}`);
+                              router.push(editHref(q.id));
                             }}
-                            className="text-muted-foreground hover:text-primary"
                           >
-                            <Languages className="h-3 w-3" />
+                            <Pencil className="h-3 w-3" />
                           </Button>
-                        )}
-                        <Button
-                          size="icon-xs"
-                          variant="ghost"
-                          aria-label="View question details"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setViewId(q.id);
-                            setViewOpen(true);
-                          }}
-                        >
-                          <Eye className="h-3 w-3" />
-                        </Button>
-                        <Button
-                          size="icon-xs"
-                          variant="ghost"
-                          aria-label="Edit question"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            router.push(`/dashboard/questions/${q.id}`);
-                          }}
-                        >
-                          <Pencil className="h-3 w-3" />
-                        </Button>
-                        <Button
-                          size="icon-xs"
-                          variant="ghost"
-                          aria-label="Delete question"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setDeleteTarget(q);
-                          }}
-                          className="text-muted-foreground hover:text-destructive"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-            </TableBody>
-          </Table>
-        </div>
+                          <Button
+                            size="icon-xs"
+                            variant="ghost"
+                            aria-label="Delete question"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeleteTarget(q);
+                            }}
+                            className="text-muted-foreground hover:text-destructive"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+              </TableBody>
+            </Table>
+          </div>
         )}
       </Card>
 
       {/* ------- Pagination ------- */}
-      {mode === "list" && (
-      <div className="flex items-center justify-between text-sm text-muted-foreground">
-        <span>
-          Showing{" "}
-          <span className="font-medium text-foreground">{from}</span>–
-          <span className="font-medium text-foreground">{to}</span> of{" "}
-          <span className="font-medium text-foreground">{meta.total}</span>
-        </span>
-        <div className="flex items-center gap-2">
-          <SelectFilter
-            placeholder="20 / page"
-            value={String(filters.pageSize ?? 20)}
-            onChange={(v) => setFilter("pageSize", v ? Number(v) : 20)}
-            items={[10, 20, 50].map((n) => ({
-              value: String(n),
-              label: `${n} / page`,
-            }))}
-          />
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={meta.page <= 1}
-            onClick={() =>
-              setFilters((f) => ({ ...f, page: (f.page ?? 1) - 1 }))
-            }
-            className="gap-1"
-          >
-            <ChevronLeft className="h-3.5 w-3.5" />
-            Prev
-          </Button>
-          <span className="px-2 text-foreground tabular-nums">
-            {meta.page} / {meta.totalPages}
+      {mode === "list" && !awaitingFirstPage && (
+        <div className="flex items-center justify-between text-sm text-muted-foreground">
+          <span>
+            Showing{" "}
+            <span className="font-medium text-foreground">{from}</span>–
+            <span className="font-medium text-foreground">{to}</span> of{" "}
+            <span className="font-medium text-foreground">{meta.total}</span>
           </span>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={meta.page >= meta.totalPages}
-            onClick={() =>
-              setFilters((f) => ({ ...f, page: (f.page ?? 1) + 1 }))
-            }
-            className="gap-1"
-          >
-            Next
-            <ChevronRight className="h-3.5 w-3.5" />
-          </Button>
+          <div className="flex items-center gap-2">
+            <SelectFilter
+              placeholder="20 / page"
+              value={String(filters.pageSize ?? 20)}
+              onChange={(v) => setFilter("pageSize", v ? Number(v) : 20)}
+              items={[10, 20, 50].map((n) => ({
+                value: String(n),
+                label: `${n} / page`,
+              }))}
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={meta.page <= 1}
+              onClick={() =>
+                setFilters((f) => ({ ...f, page: (f.page ?? 1) - 1 }))
+              }
+              className="gap-1"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+              Prev
+            </Button>
+            <span className="px-2 text-foreground tabular-nums">
+              {meta.page} / {meta.totalPages}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={meta.page >= meta.totalPages}
+              onClick={() =>
+                setFilters((f) => ({ ...f, page: (f.page ?? 1) + 1 }))
+              }
+              className="gap-1"
+            >
+              Next
+              <ChevronRight className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
-      </div>
       )}
 
       {/* ------- Dialogs ------- */}

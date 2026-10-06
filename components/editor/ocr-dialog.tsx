@@ -17,6 +17,74 @@ import {
 import { Button } from "@/components/ui/button";
 import { LoaderCircle, ScanText, Upload } from "lucide-react";
 
+/** Cap the pixel count sent to the server — OCR time scales with pixels. */
+const MAX_PIXELS = 4_000_000;
+/** Vercel request bodies cap at ~4.5 MB; stay well under as base64. */
+const MAX_UPLOAD_CHARS = 3_500_000;
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Could not decode image"));
+    img.src = src;
+  });
+}
+
+function stripDataUrl(value: string): string {
+  if (!value.startsWith("data:")) return value;
+  const comma = value.indexOf(",");
+  return comma >= 0 ? value.slice(comma + 1) : "";
+}
+
+/**
+ * Keep the upload inside Vercel's body limit and keep recognition inside the
+ * function's time budget: images over the pixel/size caps are scaled down and
+ * re-encoded to JPEG (white background). Everything else is sent untouched so
+ * screenshots keep their original quality. Falls back to the original image if
+ * the browser cannot decode it.
+ */
+async function toUploadBase64(dataUrl: string): Promise<string> {
+  const original = stripDataUrl(dataUrl);
+  try {
+    const img = await loadImage(dataUrl);
+    const pixels = Math.max(1, img.naturalWidth * img.naturalHeight);
+    const oversized = pixels > MAX_PIXELS;
+    if (!oversized && original.length <= MAX_UPLOAD_CHARS) return original;
+
+    const scale = oversized ? Math.min(1, Math.sqrt(MAX_PIXELS / pixels)) : 1;
+    const width = Math.max(1, Math.round(img.naturalWidth * scale));
+    const height = Math.max(1, Math.round(img.naturalHeight * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return original;
+
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+
+    let encoded = canvas.toDataURL("image/jpeg", 0.85);
+    if (stripDataUrl(encoded).length > MAX_UPLOAD_CHARS) {
+      encoded = canvas.toDataURL("image/jpeg", 0.6);
+    }
+    return stripDataUrl(encoded);
+  } catch {
+    return original;
+  }
+}
+
+function ocrErrorMessage(status: number, serverError?: string): string {
+  if (serverError) return serverError;
+  if (status === 413) return "Image too large. Try a smaller screenshot.";
+  if (status === 502 || status === 503 || status === 504) {
+    return "OCR took too long. Try a smaller screenshot.";
+  }
+  return "OCR failed. Try a clearer image.";
+}
+
 export function OCRDialog({
   open,
   onOpenChange,
@@ -61,9 +129,7 @@ export function OCRDialog({
     setError(null);
     setDone(false);
     try {
-      const base64 = image.startsWith("data:")
-        ? (image.split(",")[1] ?? "")
-        : image;
+      const base64 = await toUploadBase64(image);
       const res = await fetch("/api/ocr", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -73,7 +139,7 @@ export function OCRDialog({
         | { text?: string; error?: string }
         | null;
       if (!res.ok || !json || typeof json.text !== "string") {
-        setError(json?.error ?? "OCR failed. Try a clearer image.");
+        setError(ocrErrorMessage(res.status, json?.error));
         return;
       }
       onInsert(json.text);
@@ -170,7 +236,7 @@ export function OCRDialog({
           <div className="flex flex-col items-center gap-2 rounded-lg border border-zinc-800 p-6 text-center">
             <LoaderCircle className="size-5 animate-spin text-indigo-400" />
             <p className="text-xs text-muted-foreground">
-              Reading text… (first run downloads language data)
+              Reading text… this can take a few seconds.
             </p>
           </div>
         )}

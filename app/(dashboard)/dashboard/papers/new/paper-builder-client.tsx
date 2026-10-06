@@ -14,6 +14,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { nodeLabel, taxLabel } from "@/lib/taxonomy-label";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -31,9 +32,11 @@ import {
   type TaxonomyNode,
   type QuestionListDTO,
 } from "../../questions/actions";
-import { createManualPaper, createBlueprintPaper } from "../actions";
+import { createManualPaper, createBlueprintPaper, saveHeaderTemplate, type HeaderTemplateDTO } from "../actions";
+import { EXAM_PRESETS, type ExamPreset } from "@/lib/exam-presets";
+import { MAX_SETS, SET_LABELS, normalizeSetCount } from "@/lib/paper-sets";
 import type { ActionState } from "@/lib/validations";
-import { MEDIUMS } from "@/lib/validations";
+import { MEDIUMS, filterSelectValue } from "@/lib/validations";
 import { buildHeaderContext, type HeaderConfig, type SchoolHeaderProfile } from "@/lib/paper-header";
 import { DEFAULT_PAGE_CONFIG, type PageConfig } from "@/lib/paper-page";
 
@@ -50,12 +53,16 @@ type PaperDefaults = SchoolHeaderProfile & {
 interface PaperBuilderProps {
   taxonomy: TaxonomyNode[];
   paperDefaults: PaperDefaults;
+  /** Reusable heading templates saved in Settings (plus any exam presets). */
+  templates: HeaderTemplateDTO[];
 }
 
 interface SectionDraft {
   id: string;
   title: string;
   instructions: string;
+  /** Marks deducted per wrong answer ("" = no negative marking). */
+  negativeMarks: string;
   questionIds: string[];
 }
 
@@ -66,6 +73,7 @@ interface BlueprintRuleDraft {
   questionType: string;
   count: number;
   marksEach: number;
+  negativeMarks: number;
   difficultyDistribution: { easy: number; medium: number; hard: number };
 }
 
@@ -105,7 +113,7 @@ const MEDIUM_LABELS: Record<string, string> = {
 //  Main Component
 // ============================================================
 
-export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProps) {
+export function PaperBuilderClient({ taxonomy, paperDefaults, templates: initialTemplates }: PaperBuilderProps) {
   const router = useRouter();
   const [mode, setMode] = useState<"manual" | "blueprint">("manual");
   const [isPending, startTransition] = useTransition();
@@ -119,13 +127,28 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
   const [totalMarks, setTotalMarks] = useState("");
   const [passingMarks, setPassingMarks] = useState("");
   const [instructions, setInstructions] = useState(paperDefaults.defaultInstructions);
-  const headerConfig = paperDefaults.defaultHeader;
   const [watermarkText, setWatermarkText] = useState(paperDefaults.watermarkText);
   const [pageConfig, setPageConfig] = useState<PageConfig>(DEFAULT_PAGE_CONFIG);
 
+  // ── Heading templates (school default + saved/exam designs) ──
+  const [templates, setTemplates] = useState<HeaderTemplateDTO[]>(initialTemplates);
+  const [headerTemplateId, setHeaderTemplateId] = useState("");
+  // The selected template wins; otherwise the school's default header.
+  const headerConfig = useMemo(
+    () => templates.find((t) => t.id === headerTemplateId)?.config ?? paperDefaults.defaultHeader,
+    [templates, headerTemplateId, paperDefaults.defaultHeader]
+  );
+
+  // ── Multiple sets (Set A / Set B …) ──
+  const [setCount, setSetCount] = useState(1);
+
+  // ── Exam pattern template (JEE / NEET / GUJCET / CMAT …) ──
+  const [presetId, setPresetId] = useState("");
+  const [presetPending, startPresetTransition] = useTransition();
+
   // ---- Manual Mode State ----
   const [sections, setSections] = useState<SectionDraft[]>([
-    { id: newSectionId(), title: "Section A", instructions: "", questionIds: [] },
+    { id: newSectionId(), title: "Section A", instructions: "", negativeMarks: "", questionIds: [] },
   ]);
   const [activeSectionId, setActiveSectionId] = useState<string>(sections[0].id);
 
@@ -159,6 +182,7 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
       questionType: "MCQ",
       count: 2,
       marksEach: 1,
+      negativeMarks: 0,
       difficultyDistribution: { easy: 0, medium: 100, hard: 0 },
     },
   ]);
@@ -242,6 +266,7 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
       id: newSectionId(),
       title: `Section ${letter}`,
       instructions: "",
+      negativeMarks: "",
       questionIds: [],
     };
     setSections((prev) => [...prev, newSection]);
@@ -389,6 +414,7 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
         questionType: "MCQ",
         count: 2,
         marksEach: 1,
+        negativeMarks: 0,
         difficultyDistribution: { easy: 0, medium: 100, hard: 0 },
       },
     ]);
@@ -405,6 +431,77 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
     );
   }
 
+  // ---- Exam pattern template ----
+  // Prefills duration / marks / instructions, the exam's branded heading and
+  // the section (or blueprint-rule) structure. Picked questions are never
+  // discarded — the structure is only replaced while the builder is empty.
+  function applyExamPreset(preset: ExamPreset) {
+    startPresetTransition(async () => {
+      try {
+        setDuration(String(preset.duration));
+        setTotalMarks(String(preset.totalMarks));
+        setInstructions(preset.instructions);
+
+        // The branded heading is saved as a reusable template and selected,
+        // so this paper (and every export of it) prints with the exam design.
+        const saved = await saveHeaderTemplate({
+          name: preset.name,
+          kind: "EXAM",
+          config: preset.header,
+        });
+        if ("error" in saved) {
+          toast.error(saved.error);
+        } else {
+          setTemplates((prev) => [
+            ...prev.filter((t) => t.id !== saved.id && t.name !== saved.name),
+            saved,
+          ]);
+          setHeaderTemplateId(saved.id);
+        }
+
+        if (mode === "manual") {
+          if (sections.every((s) => s.questionIds.length === 0)) {
+            const next = preset.sections.map((s) => ({
+              id: newSectionId(),
+              title: s.title,
+              instructions: s.instructions ?? "",
+              negativeMarks: s.negativeMarks ? String(s.negativeMarks) : "",
+              questionIds: [],
+            }));
+            setSections(next);
+            setActiveSectionId(next[0]?.id ?? "");
+          } else {
+            toast.info(
+              "Kept your picked questions — duration, marks, instructions and heading were updated."
+            );
+          }
+        } else if (rules.every((r) => !r.chapterId)) {
+          setRules(
+            preset.blueprintRules.map((r) => ({
+              id: newRuleId(),
+              chapterId: "",
+              chapterName: "",
+              questionType: r.questionType,
+              count: r.count,
+              marksEach: r.marksEach,
+              negativeMarks: r.negativeMarks,
+              difficultyDistribution: r.difficultyDistribution,
+            }))
+          );
+        } else {
+          toast.info(
+            "Kept your blueprint rules (chapters already assigned) — the other settings were updated."
+          );
+        }
+
+        setPresetId(preset.id);
+        toast.success(`${preset.name} pattern applied.`);
+      } catch {
+        toast.error("Could not apply the exam template. Please try again.");
+      }
+    });
+  }
+
   // ---- Submit ----
   async function handleSubmit() {
     setActionState(null);
@@ -418,6 +515,9 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
       instructions,
       pageConfig,
       watermarkText,
+      // Sets + heading template — both are validated server-side.
+      setCount,
+      headerTemplateId: headerTemplateId || undefined,
     };
 
     let result: ActionState;
@@ -430,6 +530,7 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
         sections: sections.map((s) => ({
           title: s.title,
           instructions: s.instructions || undefined,
+          negativeMarks: s.negativeMarks ? Number(s.negativeMarks) : undefined,
           questionIds: s.questionIds,
         })),
       };
@@ -449,6 +550,7 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
           questionType: r.questionType,
           count: r.count,
           marksEach: r.marksEach,
+          negativeMarks: r.negativeMarks || undefined,
           difficultyDistribution: r.difficultyDistribution,
         })),
       };
@@ -484,6 +586,39 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
             <CardTitle>Paper Details</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            {/* Exam pattern template — prefills structure, marks and heading */}
+            <div className="space-y-2 rounded-lg border border-violet-500/20 bg-violet-500/5 p-3">
+              <Label>Exam Pattern Template</Label>
+              <Select
+                items={EXAM_PRESETS.map((p) => ({ value: p.id, label: p.name }))}
+                value={presetId || null}
+                onValueChange={(v) => {
+                  const preset = EXAM_PRESETS.find((p) => p.id === v);
+                  if (preset) applyExamPreset(preset);
+                }}
+              >
+                <SelectTrigger className="w-full" disabled={presetPending}>
+                  <SelectValue placeholder="Start from a standard pattern (JEE, NEET, GUJCET, CMAT …)" />
+                </SelectTrigger>
+                <SelectContent>
+                  {EXAM_PRESETS.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                {(() => {
+                  const preset = EXAM_PRESETS.find((p) => p.id === presetId);
+                  if (!preset) {
+                    return "Applies sections, marks, negative marking, duration, instructions and the exam's branded heading. Everything stays editable.";
+                  }
+                  const totalQ = preset.sections.reduce((n, s) => n + s.count, 0);
+                  return `${preset.fullName} — ${totalQ} questions · ${preset.totalMarks} marks · ${preset.duration} min.${preset.note ? ` ${preset.note}` : ""}`;
+                })()}
+              </p>
+            </div>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>Title *</Label>
@@ -615,7 +750,7 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
                 {/* Active section config */}
                 {sections.find((s) => s.id === activeSectionId) && (
                   <div className="space-y-3 rounded-lg border bg-muted/50 p-4">
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                       <div className="space-y-1">
                         <Label className="text-xs text-muted-foreground">Section Title</Label>
                         <Input
@@ -633,7 +768,23 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
                           className="h-8 text-sm"
                         />
                       </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Negative marks (per wrong)</Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          step={0.25}
+                          value={sections.find((s) => s.id === activeSectionId)?.negativeMarks || ""}
+                          onChange={(e) => updateSection(activeSectionId, { negativeMarks: e.target.value })}
+                          placeholder="0"
+                          className="h-8 text-sm"
+                        />
+                      </div>
                     </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Shown on the printed paper as “−n per wrong”. Leave empty when the section has no
+                      negative marking.
+                    </p>
                   </div>
                 )}
               </CardContent>
@@ -722,7 +873,7 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
                     onKeyDown={(e) => e.key === "Enter" && searchQuestions()}
                     className="text-sm"
                   />
-                  <Select value={qMedium} onValueChange={(v) => { setQMedium(v ?? ""); setQSubjectId(""); setQChapterId(""); }}>
+                  <Select value={qMedium} onValueChange={(v) => { setQMedium(filterSelectValue(v)); setQSubjectId(""); setQChapterId(""); }}>
                     <SelectTrigger className="text-sm">
                       <SelectValue placeholder="All Mediums" />
                     </SelectTrigger>
@@ -733,7 +884,7 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
                       ))}
                     </SelectContent>
                   </Select>
-                  <Select value={qSubjectId} onValueChange={(v) => { setQSubjectId(v ?? ""); setQChapterId(""); }}>
+                  <Select value={qSubjectId} onValueChange={(v) => { setQSubjectId(filterSelectValue(v)); setQChapterId(""); }}>
                     <SelectTrigger className="text-sm">
                       <SelectValue placeholder="All Subjects" />
                     </SelectTrigger>
@@ -744,13 +895,18 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
                           .filter((s) => !qMedium || s.medium === qMedium)
                           .map((s) => (
                             <SelectItem key={s.id} value={s.id}>
-                              {cl.name} — {s.name}
+                              {cl.name} — {taxLabel(s.name, s.questionCount)}
+                              {/* Without a medium filter both mediums' subjects are
+                                  listed — label them so two "Physics" never look
+                                  like the same option. */}
+                              {!qMedium &&
+                                ` · ${MEDIUM_LABELS[s.medium ?? ""] ?? s.medium ?? ""}`}
                             </SelectItem>
                           ))
                       )}
                     </SelectContent>
                   </Select>
-                  <Select value={qType} onValueChange={(v) => setQType(v ?? "")}>
+                  <Select value={qType} onValueChange={(v) => setQType(filterSelectValue(v))}>
                     <SelectTrigger className="text-sm">
                       <SelectValue placeholder="All Types" />
                     </SelectTrigger>
@@ -761,7 +917,7 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
                       ))}
                     </SelectContent>
                   </Select>
-                  <Select value={qDifficulty} onValueChange={(v) => setQDifficulty(v ?? "")}>
+                  <Select value={qDifficulty} onValueChange={(v) => setQDifficulty(filterSelectValue(v))}>
                     <SelectTrigger className="text-sm">
                       <SelectValue placeholder="All Difficulties" />
                     </SelectTrigger>
@@ -784,14 +940,14 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
                     .find((s) => s.id === qSubjectId)
                     ?.children || [];
                   return allChapters.length > 0 ? (
-                    <Select value={qChapterId} onValueChange={(v) => setQChapterId(v ?? "")}>
+                    <Select value={qChapterId} onValueChange={(v) => setQChapterId(filterSelectValue(v))}>
                       <SelectTrigger className="w-60 text-sm">
                         <SelectValue placeholder="All Chapters" />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">All Chapters</SelectItem>
                         {allChapters.map((ch) => (
-                          <SelectItem key={ch.id} value={ch.id}>{ch.name}</SelectItem>
+                          <SelectItem key={ch.id} value={ch.id}>{taxLabel(ch.name, ch.questionCount)}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -923,7 +1079,7 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
                         {taxonomy
                           .filter((cl) => cl.children.some((s) => s.medium === bpMedium))
                           .map((cl) => (
-                            <SelectItem key={cl.id} value={cl.id}>{cl.name}</SelectItem>
+                            <SelectItem key={cl.id} value={cl.id}>{nodeLabel(cl)}</SelectItem>
                           ))}
                       </SelectContent>
                     </Select>
@@ -940,7 +1096,7 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
                           ?.children
                           .filter((s) => s.medium === bpMedium)
                           .map((s) => (
-                            <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                            <SelectItem key={s.id} value={s.id}>{taxLabel(s.name, s.questionCount)}</SelectItem>
                           ))}
                       </SelectContent>
                     </Select>
@@ -972,7 +1128,7 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
                         )}
                       </div>
 
-                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
                         <div className="space-y-1">
                           <Label className="text-xs text-muted-foreground">Chapter *</Label>
                           <Select
@@ -987,7 +1143,7 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
                             </SelectTrigger>
                             <SelectContent>
                               {chapters.map((ch) => (
-                                <SelectItem key={ch.id} value={ch.id}>{ch.name}</SelectItem>
+                                <SelectItem key={ch.id} value={ch.id}>{taxLabel(ch.name, ch.questionCount)}</SelectItem>
                               ))}
                             </SelectContent>
                           </Select>
@@ -1026,6 +1182,17 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
                             step={0.5}
                             value={rule.marksEach}
                             onChange={(e) => updateRule(rule.id, { marksEach: Number(e.target.value) })}
+                            className="h-8 text-sm"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">Negative Marks</Label>
+                          <Input
+                            type="number"
+                            min={0}
+                            step={0.25}
+                            value={rule.negativeMarks}
+                            onChange={(e) => updateRule(rule.id, { negativeMarks: Number(e.target.value) })}
                             className="h-8 text-sm"
                           />
                         </div>
@@ -1142,11 +1309,31 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label>School Header (from Settings)</Label>
+              <Label>Heading Template</Label>
+              <Select
+                items={[
+                  { value: "default", label: "School default header" },
+                  ...templates.map((t) => ({ value: t.id, label: t.name })),
+                ]}
+                value={headerTemplateId || "default"}
+                onValueChange={(v) => setHeaderTemplateId(v === "default" ? "" : typeof v === "string" ? v : "")}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="School default header" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">School default header</SelectItem>
+                  {templates.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      {t.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <div className="rounded-lg border bg-muted/30 p-3">
                 <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
                   <Settings className="h-3.5 w-3.5" />
-                  Your saved header design is applied automatically on print.
+                  Pick any saved design — the same one prints on every export.
                 </div>
                 <HeaderRenderer
                   config={headerConfig}
@@ -1157,9 +1344,31 @@ export function PaperBuilderClient({ taxonomy, paperDefaults }: PaperBuilderProp
                   href="/dashboard/admin/settings"
                   className="mt-2 inline-block text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
                 >
-                  Edit the default design in Settings →
+                  Save / edit templates in Settings →
                 </a>
               </div>
+            </div>
+            <Separator />
+            <div className="space-y-2">
+              <Label>Exam Sets</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  min={1}
+                  max={MAX_SETS}
+                  value={setCount}
+                  onChange={(e) => setSetCount(normalizeSetCount(e.target.value))}
+                  className="h-8 w-20 text-sm"
+                />
+                <span className="text-xs text-muted-foreground">
+                  Set {setCount > 1 ? `A – ${SET_LABELS[setCount - 1]}` : "A"}
+                </span>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                {setCount > 1
+                  ? `${setCount} sets are printed in one file. Sets B onward reshuffle the question order and the MCQ options, and each set gets its own answer key, solution and OMR sheet.`
+                  : "One set. Raise this to print Set A / Set B … with reshuffled questions and options."}
+              </p>
             </div>
             <Separator />
             <div className="space-y-2">

@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { getPaperById } from "../actions";
+import { getPaperById, listHeaderTemplates } from "../actions";
 import { PaperDetailClient } from "./paper-detail-client";
 
 interface PageProps {
@@ -8,11 +8,11 @@ interface PageProps {
 
 export default async function PaperDetailPage({ params }: PageProps) {
   const { id } = await params;
-  const paper = await getPaperById(id);
+  const [paper, templates] = await Promise.all([getPaperById(id), listHeaderTemplates()]);
 
   if (!paper) {
     notFound();
   }
 
-  return <PaperDetailClient paper={paper} />;
+  return <PaperDetailClient paper={paper} templates={templates} />;
 }

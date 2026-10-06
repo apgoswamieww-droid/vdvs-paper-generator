@@ -29,6 +29,14 @@ import { mcqOptionsLayout, parseMcqLayout, parseMcqOptions } from "@/lib/questio
 import { displaySectionInstructions } from "@/lib/section-instructions";
 import { KaTeXRenderer } from "@/components/shared/katex-text";
 import { downloadPaperExport } from "@/lib/paper-export-client";
+import { MAX_SETS, SET_LABELS, normalizeSetCount } from "@/lib/paper-sets";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { PAPER_DOCUMENT_LABELS, type PaperDocumentType } from "@/lib/paper-document";
 import {
   EMPTY_HEADER,
@@ -60,6 +68,7 @@ import {
   deletePaper,
   replacePaperQuestion,
   type PaperDetailDTO,
+  type HeaderTemplateDTO,
 } from "../actions";
 import type { ActionState } from "@/lib/validations";
 
@@ -69,7 +78,13 @@ const STATUS_CONFIG: Record<string, { color: string; icon: React.ElementType }> 
   ARCHIVED: { color: "bg-zinc-500/15 text-zinc-400 border-zinc-500/20", icon: FileText },
 };
 
-export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
+export function PaperDetailClient({
+  paper,
+  templates,
+}: {
+  paper: PaperDetailDTO;
+  templates: HeaderTemplateDTO[];
+}) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [actionState, setActionState] = useState<ActionState | null>(null);
@@ -87,16 +102,19 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
   // Customization
   const [editMode, setEditMode] = useState(false);
 
-  // The header comes from the school's reusable design (single source of
-  // truth) — papers no longer store their own copy.
+  // Heading: the paper's chosen template wins; the school's reusable design
+  // remains the fallback.
   const headerConfig = useMemo(
     () =>
+      templates.find((t) => t.id === paper.headerTemplateId)?.config ??
       paper.school?.headerConfig ??
       (paper.school ? defaultHeaderFromSchool(paper.school) : EMPTY_HEADER),
-    [paper.school]
+    [templates, paper.headerTemplateId, paper.school]
   );
   const [watermarkText, setWatermarkText] = useState(paper.watermarkText || "");
   const [instructions, setInstructions] = useState(paper.instructions || "");
+  const [setCount, setSetCount] = useState(paper.setCount);
+  const [headerTemplateId, setHeaderTemplateId] = useState(paper.headerTemplateId ?? "");
   const [pageConfig, setPageConfig] = useState<PageConfig>(() =>
     normalizePageConfig(paper.pageConfig ?? DEFAULT_PAGE_CONFIG)
   );
@@ -198,7 +216,17 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
 
   async function handleSaveCustomization() {
     const fd = new FormData();
-    fd.append("payload", JSON.stringify({ watermarkText, instructions, pageConfig }));
+    fd.append(
+      "payload",
+      JSON.stringify({
+        watermarkText,
+        instructions,
+        pageConfig,
+        // "" resets the paper to the school default header.
+        setCount,
+        headerTemplateId,
+      })
+    );
     const result = await updatePaper(paper.id, null, fd);
     setActionState(result);
     showResultToast(result, { successMessage: "Customization saved." });
@@ -239,6 +267,11 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
                 }
               >
                 {paper.generationMode}
+              </Badge>
+              <Badge variant="outline" className="border-sky-500/30 text-sky-400">
+                {paper.setCount > 1
+                  ? `${paper.setCount} sets · A–${SET_LABELS[paper.setCount - 1]}`
+                  : "1 set"}
               </Badge>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -333,6 +366,52 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
             <CardTitle className="text-base">Paper Customization</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Heading Template</Label>
+                <Select
+                  items={[
+                    { value: "default", label: "School default header" },
+                    ...templates.map((t) => ({ value: t.id, label: t.name })),
+                  ]}
+                  value={headerTemplateId || "default"}
+                  onValueChange={(v) =>
+                    setHeaderTemplateId(v === "default" ? "" : typeof v === "string" ? v : "")
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="School default header" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="default">School default header</SelectItem>
+                    {templates.map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">
+                  Switch to any saved design — PDF and Word exports follow this choice.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label>Exam Sets (A/B/C …)</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={MAX_SETS}
+                  value={setCount}
+                  onChange={(e) => setSetCount(normalizeSetCount(e.target.value))}
+                  className="text-sm"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  {setCount > 1
+                    ? `Exports print Set A–${SET_LABELS[setCount - 1]}; each set reshuffles questions and options and gets its own key, solution and OMR.`
+                    : "Raise this to print several sets with reshuffled questions and options."}
+                </p>
+              </div>
+            </div>
             <div className="space-y-2">
               <Label>Page Layout (PDF &amp; Word)</Label>
               <PageSettingsEditor value={pageConfig} onChange={setPageConfig} />
@@ -432,7 +511,8 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
                 <h3 className="mb-3 border-b border-slate-200 pb-1 text-base font-bold">
                   {section.title}
                   <span className="ml-2 text-xs font-normal text-slate-500">
-                    ({section.totalMarks} marks)
+                    ({section.totalMarks} marks
+                    {section.negativeMarks ? ` · −${section.negativeMarks} per wrong` : ""})
                   </span>
                 </h3>
                 {displaySectionInstructions(section.instructions) && (
@@ -563,6 +643,7 @@ export function PaperDetailClient({ paper }: { paper: PaperDetailDTO }) {
         paperId={paper.id}
         paperTitle={paper.title}
         savedConfig={paper.pageConfig}
+        setCount={paper.setCount}
       />
 
       <ConfirmDialog

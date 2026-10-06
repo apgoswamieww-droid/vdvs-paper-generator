@@ -12,6 +12,7 @@ import { requireSession } from "@/lib/session";
 import { normalizeStoredHeaderConfig, type HeaderConfig } from "@/lib/paper-header";
 import { teacherSubjectIds } from "@/lib/question-scope";
 import { normalizePageConfig, type PageConfig } from "@/lib/paper-page";
+import { normalizeSetCount } from "@/lib/paper-sets";
 import {
   createManualPaperSchema,
   createBlueprintPaperSchema,
@@ -26,6 +27,144 @@ function revalidatePapers() {
   for (const p of PAPER_PATHS) revalidatePath(p);
 }
 
+// ------------------------------------------------------------
+//  Heading templates (shared helpers)
+// ------------------------------------------------------------
+
+export type HeaderTemplateDTO = {
+  id: string;
+  name: string;
+  kind: "CUSTOM" | "EXAM";
+  config: HeaderConfig;
+  updatedAt: string;
+};
+
+const templateSelect = {
+  id: true,
+  name: true,
+  kind: true,
+  config: true,
+  updatedAt: true,
+} as const;
+
+/**
+ * Validates that a picked heading template belongs to this school.
+ * An empty id means "use the school default header" (null).
+ */
+async function resolveHeaderTemplateId(
+  schoolId: string,
+  raw: string | undefined
+): Promise<{ id: string | null; error?: string }> {
+  const id = String(raw ?? "").trim();
+  if (!id) return { id: null };
+  const row = await prisma.headerTemplate.findFirst({
+    where: { id, schoolId },
+    select: { id: true },
+  });
+  if (!row) {
+    return { id: null, error: "Heading template not found. Please pick another template." };
+  }
+  return { id: row.id };
+}
+
+// ============================================================
+//  Heading template library (named, reusable paper headers)
+// ============================================================
+
+export async function listHeaderTemplates(): Promise<HeaderTemplateDTO[]> {
+  const { schoolId } = await requireSession();
+  const rows = await prisma.headerTemplate.findMany({
+    where: { schoolId },
+    orderBy: [{ kind: "asc" }, { name: "asc" }],
+    select: {
+      id: true,
+      name: true,
+      kind: true,
+      config: true,
+      updatedAt: true,
+    },
+  });
+
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    kind: r.kind,
+    config: normalizeStoredHeaderConfig(r.config),
+    updatedAt: r.updatedAt.toISOString(),
+  }));
+}
+
+export async function saveHeaderTemplate(
+  input: { id?: string; name: string; kind?: "CUSTOM" | "EXAM"; config: HeaderConfig }
+): Promise<HeaderTemplateDTO | { error: string }> {
+  const { schoolId } = await requireSession();
+  const name = String(input.name ?? "").trim();
+  if (!name) return { error: "Template name is required." };
+  if (name.length > 80) return { error: "Template name must be 80 characters or fewer." };
+
+  const config = normalizeStoredHeaderConfig(input.config);
+  const kind: "CUSTOM" | "EXAM" = input.kind === "EXAM" ? "EXAM" : "CUSTOM";
+
+  try {
+    // Keep one row per name: re-saving under the same name overwrites it,
+    // and an explicit id only ever addresses this school's own row.
+    const scoped = input.id
+      ? await prisma.headerTemplate.findFirst({
+          where: { id: input.id, schoolId },
+          select: { id: true },
+        })
+      : null;
+    const byName = await prisma.headerTemplate.findFirst({
+      where: { schoolId, name },
+      select: { id: true },
+    });
+    const targetId = scoped?.id ?? byName?.id ?? null;
+    if (input.id && !scoped) {
+      return { error: "Template not found." };
+    }
+
+    const data = {
+      name,
+      kind,
+      config: config as unknown as Prisma.InputJsonValue,
+    };
+    const row = targetId
+      ? await prisma.headerTemplate.update({
+          where: { id: targetId },
+          data,
+          select: templateSelect,
+        })
+      : await prisma.headerTemplate.create({
+          data: { ...data, schoolId },
+          select: templateSelect,
+        });
+
+    revalidatePapers();
+    return {
+      id: row.id,
+      name: row.name,
+      kind: row.kind,
+      config: normalizeStoredHeaderConfig(row.config),
+      updatedAt: row.updatedAt.toISOString(),
+    };
+  } catch {
+    return { error: "Could not save the template. Please try again." };
+  }
+}
+
+export async function deleteHeaderTemplate(id: string): Promise<ActionState> {
+  const { schoolId } = await requireSession();
+  try {
+    // Papers keep printing: the FK is ON DELETE SET NULL, so they fall back
+    // to the school default header.
+    await prisma.headerTemplate.deleteMany({ where: { id, schoolId } });
+    revalidatePapers();
+    return { success: true, message: "Template deleted." };
+  } catch {
+    return { success: false, error: "Could not delete the template." };
+  }
+}
+
 // ============================================================
 //  Types
 // ============================================================
@@ -36,6 +175,7 @@ export type PaperListDTO = {
   totalMarks: number;
   passingMarks: number | null;
   duration: number | null;
+  setCount: number;
   status: "DRAFT" | "PUBLISHED" | "ARCHIVED";
   generationMode: "MANUAL" | "BLUEPRINT";
   createdAt: string;
@@ -63,6 +203,10 @@ export type PaperDetailDTO = {
   passingMarks: number | null;
   duration: number | null;
   instructions: string | null;
+  /** How many sets (A/B/C …) this paper exports as. */
+  setCount: number;
+  /** Selected heading template (null = school default header). */
+  headerTemplateId: string | null;
   status: "DRAFT" | "PUBLISHED" | "ARCHIVED";
   generationMode: "MANUAL" | "BLUEPRINT";
   schoolHeader: string | null;
@@ -81,6 +225,7 @@ export type PaperDetailDTO = {
     instructions: string | null;
     order: number;
     totalMarks: number;
+    negativeMarks: number | null;
     questions: {
       id: string;
       order: number;
@@ -148,6 +293,10 @@ export async function createManualPaper(
   // Build question marks lookup
   const questionMarksMap = new Map(validQuestions.map((q) => [q.id, q.marks]));
 
+  // Heading template must belong to this school.
+  const template = await resolveHeaderTemplateId(session.schoolId, data.headerTemplateId);
+  if (template.error) return { success: false, error: template.error };
+
   try {
     const paper = await prisma.$transaction(
       async (tx) => {
@@ -168,6 +317,8 @@ export async function createManualPaper(
             schoolId: session.schoolId,
             subjectId: data.subjectId || null,
             createdById: session.id,
+            setCount: normalizeSetCount(data.setCount),
+            headerTemplateId: template.id,
           },
         });
 
@@ -180,6 +331,7 @@ export async function createManualPaper(
               instructions: sectionData.instructions || null,
               order: sectionIdx,
               totalMarks: 0,
+              negativeMarks: sectionData.negativeMarks || null,
               paperId: createdPaper.id,
             },
           });
@@ -251,6 +403,10 @@ export async function createBlueprintPaper(
     return { success: false, error: "Subject not found in your school." };
   }
 
+  // Heading template must belong to this school.
+  const template = await resolveHeaderTemplateId(session.schoolId, data.headerTemplateId);
+  if (template.error) return { success: false, error: template.error };
+
   try {
     const paper = await prisma.$transaction(
       async (tx) => {
@@ -271,6 +427,8 @@ export async function createBlueprintPaper(
             schoolId: session.schoolId,
             subjectId: data.subjectId,
             createdById: session.id,
+            setCount: normalizeSetCount(data.setCount),
+            headerTemplateId: template.id,
           },
         });
 
@@ -344,6 +502,7 @@ export async function createBlueprintPaper(
               instructions: null,
               order: ruleIdx,
               totalMarks: count * marksEach,
+              negativeMarks: rule.negativeMarks || null,
               paperId: createdPaper.id,
             },
           });
@@ -400,7 +559,7 @@ export async function updatePaper(
 
   const existing = await prisma.paper.findFirst({
     where: { id, schoolId: session.schoolId },
-    select: { id: true },
+    select: { id: true, headerTemplateId: true },
   });
   if (!existing) return { success: false, error: "Paper not found." };
 
@@ -413,6 +572,19 @@ export async function updatePaper(
   if (data.passingMarks !== undefined) updateData.passingMarks = data.passingMarks ? Number(data.passingMarks) : null;
   if (data.instructions !== undefined) updateData.instructions = data.instructions || null;
   if (data.schoolHeader !== undefined) updateData.schoolHeader = data.schoolHeader || null;
+  if (data.setCount !== undefined) updateData.setCount = normalizeSetCount(data.setCount);
+  if (data.headerTemplateId !== undefined) {
+    const template = await resolveHeaderTemplateId(session.schoolId, data.headerTemplateId);
+    if (template.error) return { success: false, error: template.error };
+    // Only touch the relation when it actually changes: connecting an already
+    // connected paper is a no-op, and disconnecting a paper that has no
+    // template would issue a pointless UPDATE.
+    if (template.id !== existing.headerTemplateId) {
+      updateData.headerTemplate = template.id
+        ? { connect: { id: template.id } }
+        : { disconnect: true };
+    }
+  }
   if (data.pageConfig !== undefined) {
     updateData.pageConfig = data.pageConfig
       ? (data.pageConfig as unknown as Prisma.InputJsonValue)
@@ -531,6 +703,7 @@ export async function listPapers(
         totalMarks: true,
         passingMarks: true,
         duration: true,
+        setCount: true,
         status: true,
         generationMode: true,
         createdAt: true,
@@ -555,6 +728,7 @@ export async function listPapers(
       totalMarks: r.totalMarks,
       passingMarks: r.passingMarks,
       duration: r.duration,
+      setCount: r.setCount,
       status: r.status,
       generationMode: r.generationMode,
       createdAt: r.createdAt.toISOString(),
@@ -591,6 +765,8 @@ export async function getPaperById(id: string): Promise<PaperDetailDTO | null> {
       passingMarks: true,
       duration: true,
       instructions: true,
+      setCount: true,
+      headerTemplateId: true,
       status: true,
       generationMode: true,
       schoolHeader: true,
@@ -627,6 +803,7 @@ export async function getPaperById(id: string): Promise<PaperDetailDTO | null> {
           instructions: true,
           order: true,
           totalMarks: true,
+          negativeMarks: true,
           questions: {
             orderBy: { order: "asc" },
             select: {
@@ -664,6 +841,8 @@ export async function getPaperById(id: string): Promise<PaperDetailDTO | null> {
     passingMarks: paper.passingMarks,
     duration: paper.duration,
     instructions: paper.instructions,
+    setCount: paper.setCount,
+    headerTemplateId: paper.headerTemplateId,
     status: paper.status,
     generationMode: paper.generationMode,
     schoolHeader: paper.schoolHeader,
@@ -694,6 +873,7 @@ export async function getPaperById(id: string): Promise<PaperDetailDTO | null> {
       instructions: s.instructions,
       order: s.order,
       totalMarks: s.totalMarks,
+      negativeMarks: s.negativeMarks,
       questions: s.questions.map((q) => ({
         id: q.id,
         order: q.order,

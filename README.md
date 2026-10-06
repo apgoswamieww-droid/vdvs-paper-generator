@@ -1,3 +1,4 @@
+opencode -s ses_ef021a8e8ffeWwwxq8Nq3w8qA2
 # School Paper Generator
 
 A multi-tenant SaaS web app for Indian schools (GSEB / CBSE) to build, print and assign exam papers — with a bilingual (English / Gujarati) question bank, AI question generation, OCR import, PDF / Word export, and online exams with grading.

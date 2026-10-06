@@ -7,6 +7,7 @@ import prisma from "@/lib/prisma";
 import { requireSession } from "@/lib/session";
 import { BLOOM_LEVELS } from "@/lib/validations";
 import { parseMcqLayout } from "@/lib/question-options";
+import { notifyMany } from "@/lib/notifications";
 
 // ============================================================
 //  TEACHER — AI Question Review Queue
@@ -63,7 +64,7 @@ export async function reviewQuestion(raw: unknown): Promise<ReviewActionResult> 
       status: "PENDING",
       assignedTeacherId: session.id,
     },
-    select: { id: true, questionType: true, options: true },
+    select: { id: true, questionType: true, options: true, questionText: true },
   });
   if (!question) {
     return { success: false, error: "This question is not in your review queue." };
@@ -111,5 +112,38 @@ export async function reviewQuestion(raw: unknown): Promise<ReviewActionResult> 
 
   revalidatePath("/dashboard/teacher/questions/review");
   revalidatePath("/dashboard/questions");
+
+  // The admins who routed this question find out the moment it is decided.
+  try {
+    const admins = await prisma.user.findMany({
+      where: { schoolId: session.schoolId, role: "SCHOOL_ADMIN", isActive: true },
+      select: { id: true },
+    });
+    if (admins.length > 0) {
+      const snippet =
+        question.questionText.length > 90
+          ? `${question.questionText.slice(0, 90)}…`
+          : question.questionText;
+      await notifyMany(
+        admins.map((admin) => ({
+          userId: admin.id,
+          schoolId: session.schoolId,
+          type: "QUESTION_REVIEWED",
+          title:
+            action === "approve"
+              ? "A teacher approved an AI question"
+              : "A teacher rejected an AI question",
+          body:
+            action === "approve"
+              ? `Approved by ${session.name ?? "a teacher"}: "${snippet}"`
+              : `Rejected by ${session.name ?? "a teacher"}: "${snippet}"`,
+          data: { url: "/dashboard/questions", questionIds: [id] },
+        }))
+      );
+    }
+  } catch {
+    // never fail the review itself because a notification could not be sent
+  }
+
   return { success: true };
 }

@@ -5,6 +5,7 @@ import { normalizePageConfig, pageDimensions, type PageConfig } from "@/lib/pape
 import { imagePixelSize, type DocxImage } from "@/lib/docx";
 import { buildPaperDocx, type DocxLogo } from "@/lib/paper-docx";
 import { normalizeHeaderConfig } from "@/lib/paper-header";
+import { normalizeSetCount } from "@/lib/paper-sets";
 import {
   documentFileSuffix,
   isPaperDocumentType,
@@ -14,12 +15,14 @@ import {
 // ============================================================
 //  POST /api/export-docx
 //  Body: { paperId: string, documentType?: "paper" | "answer-key" | "solution" | "omr",
-//          includeAnswerKey?: boolean, pageOverrides?: PageConfig }
+//          includeAnswerKey?: boolean, pageOverrides?: PageConfig,
+//          setCount?: number }
 //
 //  Renders the requested document (paper, answer key or solution)
-//  as a Word (.docx) file, honoring the saved header config and
-//  page setup. No third-party dependency — the OOXML package is
-//  assembled in lib/docx.ts.
+//  as a Word (.docx) file, honoring the selected heading template,
+//  page setup and the paper's set count (Set A / Set B … are
+//  reshuffled per set, matching the PDF engine). No third-party
+//  dependency — the OOXML package is assembled in lib/docx.ts.
 // ============================================================
 
 export async function POST(request: NextRequest) {
@@ -31,6 +34,7 @@ export async function POST(request: NextRequest) {
       includeAnswerKey = false,
       pageOverrides,
       documentType: rawDocumentType,
+      setCount: rawSetCount,
     } = body;
     const documentType: PaperDocumentType = isPaperDocumentType(rawDocumentType)
       ? rawDocumentType
@@ -55,11 +59,13 @@ export async function POST(request: NextRequest) {
       select: {
         id: true,
         title: true,
+        setCount: true,
         totalMarks: true,
         duration: true,
         instructions: true,
         pageConfig: true,
         createdAt: true,
+        headerTemplate: { select: { config: true } },
         subject: {
           select: { name: true, classLevel: { select: { name: true } } },
         },
@@ -107,8 +113,11 @@ export async function POST(request: NextRequest) {
 
     const pageConfig: PageConfig = normalizePageConfig(pageOverrides ?? paper.pageConfig);
 
-    // The header design now comes from the school (single source of truth).
-    const headerConfig = paper.school?.headerConfig ?? null;
+    // Sets: the request may override the paper's own set count.
+    const setCount = normalizeSetCount(rawSetCount ?? paper.setCount);
+
+    // Heading: the paper's chosen template wins, then the school default.
+    const headerConfig = paper.headerTemplate?.config ?? paper.school?.headerConfig ?? null;
 
     // Best-effort: embed the school logo, but only when the header shows one
     // (avoids fetching an image that would never be rendered).
@@ -121,6 +130,7 @@ export async function POST(request: NextRequest) {
 
     const docx = buildPaperDocx(
       {
+        id: paper.id,
         title: paper.title,
         totalMarks: paper.totalMarks,
         duration: paper.duration,
@@ -131,17 +141,18 @@ export async function POST(request: NextRequest) {
         school: paper.school,
         sections: paper.sections,
       },
-      { includeAnswerKey, pageConfig, logo, documentType }
+      { includeAnswerKey, pageConfig, logo, documentType, setCount }
     );
 
     const baseName = paper.title.replace(/[^a-zA-Z0-9]/g, "_") || "paper";
+    const setsSuffix = setCount > 1 ? "_all_sets" : "";
 
     return new Response(new Uint8Array(docx), {
       status: 200,
       headers: {
         "Content-Type":
           "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Content-Disposition": `attachment; filename="${baseName}${documentFileSuffix(documentType)}.docx"`,
+        "Content-Disposition": `attachment; filename="${baseName}${documentFileSuffix(documentType)}${setsSuffix}.docx"`,
       },
     });
   } catch (error) {

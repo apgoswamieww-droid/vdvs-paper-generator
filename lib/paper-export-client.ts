@@ -40,16 +40,21 @@ export function fileSafe(title: string): string {
   return title.replace(/[^a-zA-Z0-9]/g, "_") || "paper";
 }
 
-/** e.g. "Unit_Test_answer_key.pdf" / "Unit_Test_solution.docx" */
+/**
+ * e.g. "Unit_Test_answer_key.pdf" / "Unit_Test_solution.docx" /
+ * "Unit_Test_all_sets.pdf" (multi-set exports carry every set).
+ */
 export function exportFileName(
   paperTitle: string,
   documentType: PaperDocumentType,
   format: ExportFormat,
-  includeAnswerKey = false
+  includeAnswerKey = false,
+  setCount = 1
 ): string {
   const ext = format === "pdf" ? "pdf" : "docx";
   const suffix = documentFileSuffix(documentType) || (includeAnswerKey ? "_answer_key" : "");
-  return `${fileSafe(paperTitle)}${suffix}.${ext}`;
+  const sets = setCount > 1 ? "_all_sets" : "";
+  return `${fileSafe(paperTitle)}${suffix}${sets}.${ext}`;
 }
 
 /**
@@ -63,6 +68,8 @@ export async function downloadPaperExport(options: {
   format: ExportFormat;
   includeAnswerKey?: boolean;
   pageOverrides?: PageConfig;
+  /** Sets to include (1…N). Defaults to the paper's own configured count. */
+  setCount?: number;
 }): Promise<void> {
   const {
     paperId,
@@ -71,6 +78,7 @@ export async function downloadPaperExport(options: {
     format,
     includeAnswerKey = false,
     pageOverrides,
+    setCount,
   } = options;
 
   const meta = EXPORT_FORMATS.find((f) => f.value === format);
@@ -79,7 +87,7 @@ export async function downloadPaperExport(options: {
   const res = await fetch(meta.endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ paperId, documentType, includeAnswerKey, pageOverrides }),
+    body: JSON.stringify({ paperId, documentType, includeAnswerKey, pageOverrides, setCount }),
   });
 
   if (!res.ok) {
@@ -91,7 +99,13 @@ export async function downloadPaperExport(options: {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = exportFileName(paperTitle, documentType, format, includeAnswerKey);
+  a.download = exportFileName(
+    paperTitle,
+    documentType,
+    format,
+    includeAnswerKey,
+    setCount ?? 1
+  );
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

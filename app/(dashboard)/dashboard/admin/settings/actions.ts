@@ -2,11 +2,18 @@
 
 import { z } from "zod";
 import { revalidatePath } from "next/cache";
-import { Prisma } from "@prisma/client";
+import { Prisma, type NotificationType } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { resolveAdminScope } from "../scope";
 import { toPersistedHeaderConfig, type HeaderConfig } from "@/lib/paper-header";
 import { headerConfigSchema } from "@/lib/validations";
+import {
+  savePreferences,
+  notify,
+  NOTIFICATION_EVENTS,
+  type ChannelPrefs,
+} from "@/lib/notifications";
+import { getSession } from "@/lib/session";
 
 // ============================================================
 //  SCHOOL SETTINGS — tenant-scoped advanced configuration
@@ -44,6 +51,27 @@ const sectionSchema = z.union([
     allowSelfRegistration: z.boolean(),
     teacherCanEdit: z.boolean(),
   }),
+  z.object({
+    section: z.literal("notifications"),
+    entries: z
+      .array(
+        z.object({
+          event: z.enum(
+            NOTIFICATION_EVENTS.map((e) => e.value) as [
+              NotificationType,
+              ...NotificationType[],
+            ]
+          ),
+          prefs: z.object({
+            inApp: z.boolean(),
+            push: z.boolean(),
+            email: z.boolean(),
+            reminderHours: z.number().int().min(1).max(720),
+          }),
+        })
+      )
+      .min(1),
+  }),
 ]);
 
 export type SettingsActionResult = { success: boolean; error?: string };
@@ -57,6 +85,17 @@ export async function updateSchoolSettings(raw: unknown): Promise<SettingsAction
     }
 
     const { section } = parsed.data;
+
+    // Notifications live in their own table (one row per school + event),
+    // so they are saved through the preference upserts, not school.update.
+    if (section === "notifications") {
+      await savePreferences(
+        scope.schoolId,
+        parsed.data.entries as { event: NotificationType; prefs: ChannelPrefs }[]
+      );
+      revalidatePath("/dashboard/admin/settings");
+      return { success: true };
+    }
 
     const data =
       section === "general"
@@ -100,5 +139,50 @@ export async function updateSchoolSettings(raw: unknown): Promise<SettingsAction
     return { success: true };
   } catch {
     return { success: false, error: "Could not save the school settings." };
+  }
+}
+// ============================================================
+//  Send test notification
+//  The admin's own account receives a real notification with
+//  preferences bypassed (in-app + browser push), so they can
+//  confirm delivery without waiting for a real assignment.
+// ============================================================
+
+export type TestNotificationResult = {
+  success: boolean;
+  error?: string;
+  pushSent?: number;
+  pushSkipped?: string;
+};
+
+export async function sendTestNotification(): Promise<TestNotificationResult> {
+  try {
+    const scope = await resolveAdminScope();
+    const session = await getSession();
+    if (!session?.id) return { success: false, error: "Sign in again and retry." };
+
+    const result = await notify({
+      userId: session.id,
+      schoolId: scope.schoolId,
+      type: "QUESTION_ASSIGNED",
+      title: "Test notification",
+      body: "Notifications are working — assignments, review outcomes and reminders arrive like this.",
+      data: { url: "/dashboard/notifications" },
+      force: true,
+    });
+
+    if (result.skipped === "error") {
+      return { success: false, error: "Could not create the test notification." };
+    }
+    if (!result.created && result.pushSent === 0) {
+      return {
+        success: true,
+        pushSent: 0,
+        pushSkipped: "Created in your feed — enable browser push to also get the popup.",
+      };
+    }
+    return { success: true, pushSent: result.pushSent, pushSkipped: result.skipped };
+  } catch {
+    return { success: false, error: "Could not send the test notification." };
   }
 }

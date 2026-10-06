@@ -28,6 +28,7 @@ import {
   type QuestionDetailDTO,
   type QuestionListDTO,
 } from "./actions";
+import { QUESTIONS_LIST_PATH } from "./list-state";
 import {
   questionFormSchema,
   QUESTION_TYPES,
@@ -38,6 +39,7 @@ import {
   type QuestionFormInput,
 } from "@/lib/validations";
 import { KaTeXRenderer } from "@/components/shared/katex-text";
+import { nodeLabel, taxLabel } from "@/lib/taxonomy-label";
 import { AdvancedCustomEditor } from "@/components/editor/advanced-custom-editor";
 import { LoadingButton } from "@/components/shared";
 import { Button } from "@/components/ui/button";
@@ -103,14 +105,19 @@ export function QuestionForm({
   tree,
   onSaved,
   initialLink,
+  returnTo,
 }: {
   editing: QuestionDetailDTO | null;
   tree: TaxonomyNode[];
   onSaved?: () => void;
   /** Deep-link target (?link=<id>): open the form as this question's translation. */
   initialLink?: QuestionDetailDTO | null;
+  /** Listing URL (incl. its table state) to return to after save/cancel. */
+  returnTo?: string;
 }) {
   const router = useRouter();
+  /** Where "back" lands — the listing resumes here with its filters intact. */
+  const backHref = returnTo ?? QUESTIONS_LIST_PATH;
 
   // Editing: infer the class from the tree so the cascade is pre-filled
   const [classIdState, setClassIdState] = useState(() => {
@@ -681,7 +688,7 @@ export function QuestionForm({
           return;
         }
         toast.success(res.message ?? "Saved both languages.");
-        router.push("/dashboard/questions");
+        router.push(backHref);
       } finally {
         setAutoPending(false);
       }
@@ -720,15 +727,23 @@ export function QuestionForm({
     }
 
     if (editing) {
-      // Stay on the edit page: the linked counterpart may now hold outdated
-      // text — the chip under the pair status offers an explicit re-translate.
       setTranslationOutdated(!!res.translationOutdated);
       toast.success(res.message ?? "Question saved");
+      // The in-page "re-translate" chip is gone now that we leave the form —
+      // warn here so a stale counterpart is never silently kept.
+      if (res.translationOutdated) {
+        toast.warning(
+          "Saved — the linked translation still has the previous wording. Open it to re-translate."
+        );
+      }
+      // Back to the bank on the exact page/filter state the edit was opened
+      // from — returnTo carries it in its query string.
+      router.push(backHref);
       return;
     }
 
     toast.success(res.message ?? "Question saved");
-    router.push("/dashboard/questions");
+    router.push(backHref);
   });
 
   const typedErrors = errors as unknown as {
@@ -745,7 +760,7 @@ export function QuestionForm({
           type="button"
           variant="ghost"
           size="icon"
-          onClick={() => router.push("/dashboard/questions")}
+          onClick={() => router.push(backHref)}
           className="shrink-0"
         >
           <ArrowLeft className="h-4 w-4" />
@@ -1027,7 +1042,7 @@ export function QuestionForm({
         <div className="space-y-1.5">
           <Label>Class *</Label>
           <Select
-            items={filteredTree.map((c) => ({ value: c.id, label: c.name }))}
+            items={filteredTree.map((c) => ({ value: c.id, label: nodeLabel(c) }))}
             value={classIdState || null}
             onValueChange={(v) => {
               setClassIdState(typeof v === "string" ? v : "");
@@ -1043,7 +1058,7 @@ export function QuestionForm({
             <SelectContent>
               {filteredTree.map((c) => (
                 <SelectItem key={c.id} value={c.id}>
-                  {c.name}
+                  {nodeLabel(c)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -1055,7 +1070,7 @@ export function QuestionForm({
           <Label>Subject *</Label>
           <input type="hidden" {...register("subjectId")} />
           <Select
-            items={subjects.map((s) => ({ value: s.id, label: s.name }))}
+            items={subjects.map((s) => ({ value: s.id, label: taxLabel(s.name, s.questionCount) }))}
             value={subjectId || null}
             onValueChange={(v) => {
               setValue("subjectId", typeof v === "string" ? v : "", { shouldValidate: true });
@@ -1069,7 +1084,7 @@ export function QuestionForm({
             <SelectContent>
               {subjects.map((s) => (
                 <SelectItem key={s.id} value={s.id}>
-                  {s.name}
+                  {taxLabel(s.name, s.questionCount)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -1081,7 +1096,7 @@ export function QuestionForm({
           <Label>Chapter *</Label>
           <input type="hidden" {...register("chapterId")} />
           <Select
-            items={chapters.map((c) => ({ value: c.id, label: c.name }))}
+            items={chapters.map((c) => ({ value: c.id, label: taxLabel(c.name, c.questionCount) }))}
             value={chapterId || null}
             onValueChange={(v) => {
               setValue("chapterId", typeof v === "string" ? v : "", { shouldValidate: true });
@@ -1094,7 +1109,7 @@ export function QuestionForm({
             <SelectContent>
               {chapters.map((c) => (
                 <SelectItem key={c.id} value={c.id}>
-                  {c.name}
+                  {taxLabel(c.name, c.questionCount)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -1106,7 +1121,7 @@ export function QuestionForm({
           <Label>Topic *</Label>
           <input type="hidden" {...register("topicId")} />
           <Select
-            items={topics.map((t) => ({ value: t.id, label: t.name }))}
+            items={topics.map((t) => ({ value: t.id, label: taxLabel(t.name, t.questionCount) }))}
             value={topicId || null}
             onValueChange={(v) => setValue("topicId", typeof v === "string" ? v : "")}
           >
@@ -1116,7 +1131,7 @@ export function QuestionForm({
             <SelectContent>
               {topics.map((t) => (
                 <SelectItem key={t.id} value={t.id}>
-                  {t.name}
+                  {taxLabel(t.name, t.questionCount)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -1539,7 +1554,7 @@ export function QuestionForm({
       {serverError && <p className="text-sm text-red-400">{serverError}</p>}
 
       <div className="flex items-center justify-end gap-3 pt-2">
-        <Button type="button" variant="outline" onClick={() => router.push("/dashboard/questions")}>
+        <Button type="button" variant="outline" onClick={() => router.push(backHref)}>
           Cancel
         </Button>
         {!editing && !linkParent && (

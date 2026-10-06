@@ -5,6 +5,7 @@
 
 import { z } from "zod";
 import { parseNumericAnswer } from "@/lib/question-options";
+import { MAX_SETS } from "@/lib/paper-sets";
 
 // ------------------------------------------------------------
 //  Shared enum values (kept in sync with prisma/schema.prisma)
@@ -170,6 +171,44 @@ export const questionFilterSchema = z.object({
 
 export type QuestionFilterInput = z.infer<typeof questionFilterSchema>;
 
+// --- Filter dropdown helpers ---------------------------------------------
+// The filter <Select>s use the literal value "all" for their "All …" rows,
+// while filter state uses "" / undefined for "no filter". A stray "all"
+// must never reach the query: it fails every enum above — questionFilterSchema
+// rejects the WHOLE filter object, so listQuestions silently returns an
+// empty page — and matches nothing when sent as a subjectId/chapterId.
+
+/** Normalizes a filter <Select> value: "all" (or nothing) → "". */
+export function filterSelectValue(v: string | null | undefined): string {
+  return v && v !== "all" ? v : "";
+}
+
+/** Constrained filter fields a dropdown may have set to the "all" sentinel. */
+const FILTER_SENTINEL_FIELDS = [
+  "subjectId",
+  "chapterId",
+  "topicId",
+  "questionType",
+  "difficulty",
+  "medium",
+  "bloomLevel",
+] as const;
+
+/**
+ * Strips the "all" sentinel from the constrained filter fields before
+ * validation, so a stray dropdown value can never reject the whole filter
+ * object (which would silently return zero results). `search` keeps its
+ * literal value — searching for the word "all" is legitimate.
+ */
+export function stripFilterSentinels(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const out: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+  for (const key of FILTER_SENTINEL_FIELDS) {
+    if (out[key] === "all") out[key] = undefined;
+  }
+  return out;
+}
+
 // ------------------------------------------------------------
 //  Server Action result wrapper
 // ------------------------------------------------------------
@@ -197,6 +236,8 @@ export const blueprintRuleSchema = z.object({
   questionType: questionTypeEnum,
   count: z.coerce.number().int().min(1, "At least 1 question").max(50),
   marksEach: z.coerce.number().min(0.5, "Minimum 0.5 marks").max(100),
+  // Marks deducted for a wrong answer (0/omitted = no negative marking).
+  negativeMarks: z.coerce.number().min(0).max(100).optional(),
   difficultyDistribution: z.object({
     easy: z.coerce.number().min(0).max(100).default(0),
     medium: z.coerce.number().min(0).max(100).default(0),
@@ -370,9 +411,14 @@ export const createManualPaperSchema = z.object({
   pageConfig: pageConfigSchema.optional(),
   watermarkText: z.string().trim().max(100).optional().or(z.literal("")),
   generationMode: z.literal("MANUAL"),
+  // How many sets (A/B/C…) this paper exports as — reshuffled per set.
+  setCount: z.coerce.number().int().min(1).max(MAX_SETS).optional(),
+  // Reusable heading template this paper prints with.
+  headerTemplateId: z.string().optional().or(z.literal("")),
   sections: z.array(z.object({
     title: z.string().trim().min(1, "Section title is required").max(100),
     instructions: z.string().trim().max(500).optional().or(z.literal("")),
+    negativeMarks: z.coerce.number().min(0).max(100).optional(),
     questionIds: z.array(z.string().min(1)).min(1, "Select at least one question"),
   })).min(1, "Add at least one section"),
 });
@@ -394,6 +440,8 @@ export const createBlueprintPaperSchema = z.object({
   pageConfig: pageConfigSchema.optional(),
   watermarkText: z.string().trim().max(100).optional().or(z.literal("")),
   generationMode: z.literal("BLUEPRINT"),
+  setCount: z.coerce.number().int().min(1).max(MAX_SETS).optional(),
+  headerTemplateId: z.string().optional().or(z.literal("")),
   rules: z.array(blueprintRuleSchema).min(1, "Add at least one blueprint rule"),
 });
 
@@ -411,6 +459,8 @@ export const updatePaperSchema = z.object({
   schoolHeader: z.string().trim().max(500).optional().or(z.literal("")),
   pageConfig: pageConfigSchema.optional(),
   watermarkText: z.string().trim().max(100).optional().or(z.literal("")),
+  setCount: z.coerce.number().int().min(1).max(MAX_SETS).optional(),
+  headerTemplateId: z.string().optional().or(z.literal("")),
   status: z.enum(["DRAFT", "PUBLISHED", "ARCHIVED"]).optional(),
 });
 

@@ -39,12 +39,15 @@ import {
   type HeaderTokenContext,
 } from "@/lib/paper-header";
 import { correctMcqLabels, parseMatchPairs, parseMcqOptions } from "@/lib/question-options";
+import { applySetTransform, normalizeSetCount, setLabel } from "@/lib/paper-sets";
 import { displaySectionInstructions } from "@/lib/section-instructions";
 import { type PaperDocumentType } from "@/lib/paper-document";
 
 export type DocxLogo = DocxImage & { widthPt: number; heightPt: number };
 
 export type DocxPaper = {
+  /** Stable id — the seed for multi-set reshuffling. */
+  id: string;
   title: string;
   totalMarks: number;
   duration: number | null;
@@ -64,6 +67,7 @@ export type DocxPaper = {
     title: string;
     instructions: string | null;
     totalMarks: number;
+    negativeMarks?: number | null;
     questions: {
       marksOverride: number | null;
       question: {
@@ -88,6 +92,12 @@ export type DocxBuildOptions = {
    * header plus the answers/solutions — never the paper body.
    */
   documentType?: PaperDocumentType;
+  /**
+   * How many sets (A/B/C …) the document contains. Each set is the same paper
+   * reshuffled from a per-set seed (question order + MCQ option order), so the
+   * answer key, solution and marks all follow the set being printed.
+   */
+  setCount?: number;
 };
 
 const NAVY = "02015C";
@@ -145,7 +155,6 @@ export function buildPaperDocx(paper: DocxPaper, options: DocxBuildOptions): Uin
   const size = (pt: number) => Math.max(14, Math.round(pt * 2 * fs));
 
   const out: string[] = [];
-  const answerKeyOut: string[] = [];
   const images: DocxImage[] = [];
 
   // Only embed the image when the header actually renders a logo —
@@ -178,32 +187,62 @@ export function buildPaperDocx(paper: DocxPaper, options: DocxBuildOptions): Uin
     pageDimensions(pageConfig).widthMm - pageConfig.margins.left - pageConfig.margins.right
   );
 
-  out.push(
-    ...headerParagraphs(
-      headerConfig,
-      paper,
-      options.logo ?? null,
-      logoRelId,
-      fs,
-      lh,
-      contentWidthTwips,
-      canvasLayout
-    )
-  );
+  const renderHeader = () =>
+    out.push(
+      ...headerParagraphs(
+        headerConfig,
+        paper,
+        options.logo ?? null,
+        logoRelId,
+        fs,
+        lh,
+        contentWidthTwips,
+        canvasLayout
+      )
+    );
+
+  // How many sets this document carries, and how each set is derived.
+  const sets = normalizeSetCount(options.setCount ?? 1);
+  const setVariant = (index: number): DocxPaper =>
+    index <= 0 ? paper : applySetTransform(paper, index, paper.id);
+  const setBadgePara = (badge: string) =>
+    para([{ text: `SET ${badge}`, bold: true, size: size(12), color: NAVY }], 60, {
+      align: "center",
+      lineSpacing: lh,
+    });
 
   // ── Standalone documents (answer key / solution) ──
   // Exported as their own Word files: the header above is kept, the paper body
-  // is not.
+  // is not. Each set reprints the header so every set starts a clean page.
   if (documentType !== "paper") {
-    out.push(...standaloneBody(paper, documentType, size, lh, contentWidthTwips));
+    for (let setIndex = 0; setIndex < sets; setIndex++) {
+      if (setIndex > 0) out.push(PAGE_BREAK);
+      renderHeader();
+      const badge = sets > 1 ? setLabel(setIndex) : null;
+      if (badge) out.push(setBadgePara(badge));
+      out.push(...standaloneBody(setVariant(setIndex), documentType, size, lh, contentWidthTwips));
+    }
     const documentXml = buildDocumentXml(out.join(""), sectPrFor(pageConfig));
     return buildDocx(documentXml, images);
   }
 
-  // ── Instructions ──
-  if (paper.instructions) {
-    out.push(para([{ text: "Instructions", bold: true, size: size(10), color: DARK }], 40, { lineSpacing: lh }));
-    for (const lineOfText of paper.instructions.split("\n")) {
+  // ── Sets ──
+  // Set A is the paper as authored; later sets are reshuffled from a per-set
+  // seed (section question order + MCQ option order), so their answer keys
+  // differ. Every set reprints the header and starts on a new page.
+  for (let setIndex = 0; setIndex < sets; setIndex++) {
+    const setPaper = setVariant(setIndex);
+    const badge = sets > 1 ? setLabel(setIndex) : null;
+    if (setIndex > 0) out.push(PAGE_BREAK);
+    renderHeader();
+    if (badge) out.push(setBadgePara(badge));
+
+    const answerKeyOut: string[] = [];
+
+    // ── Instructions ──
+    if (setPaper.instructions) {
+      out.push(para([{ text: "Instructions", bold: true, size: size(10), color: DARK }], 40, { lineSpacing: lh }));
+      for (const lineOfText of setPaper.instructions.split("\n")) {
       if (!lineOfText.trim()) continue;
       out.push(para([{ text: lineOfText, size: size(10) }], 30, { indent: 200, lineSpacing: lh }));
     }
@@ -215,7 +254,7 @@ export function buildPaperDocx(paper: DocxPaper, options: DocxBuildOptions): Uin
   // and the OMR sheet.
   let questionNumber = 0;
 
-  for (const section of paper.sections) {
+  for (const section of setPaper.sections) {
     out.push(
       para([{ text: section.title, bold: true, size: size(12), color: NAVY }], 40, { lineSpacing: lh })
     );
@@ -338,6 +377,7 @@ export function buildPaperDocx(paper: DocxPaper, options: DocxBuildOptions): Uin
     out.push(dividerPara("double", "#02015c"));
     out.push(...answerKeyOut);
   }
+  } // end of set loop
 
   const documentXml = buildDocumentXml(out.join(""), sectPrFor(pageConfig));
   return buildDocx(documentXml, images);

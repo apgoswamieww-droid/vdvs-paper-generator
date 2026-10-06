@@ -28,16 +28,27 @@ import {
   type PaperDocumentType,
 } from "@/lib/paper-document";
 import { displaySectionInstructions } from "@/lib/section-instructions";
+import {
+  applySetTransform,
+  normalizeSetCount,
+  setLabel,
+} from "@/lib/paper-sets";
 import katex from "katex";
 
 // ============================================================
 //  POST /api/export-pdf
-//  Body: { paperId: string, documentType?: "paper" | "answer-key" | "solution",
-//          includeAnswerKey?: boolean, pageOverrides?: PageConfig }
+//  Body: { paperId: string, documentType?: "paper" | "answer-key" | "solution" | "omr",
+//          includeAnswerKey?: boolean, pageOverrides?: PageConfig,
+//          setCount?: number }
 //
 //  Renders a styled HTML layout — the paper, or its separate answer key /
-//  solution — into a pixel-perfect, print-ready PDF using Puppeteer
+//  solution / OMR sheet — into a pixel-perfect, print-ready PDF using Puppeteer
 //  (puppeteer-core). Supports Gujarati Unicode fonts and KaTeX math.
+//
+//  Multiple sets: when the paper (or the request) asks for more than one set,
+//  each set is the same paper reshuffled from a per-set seed — question order
+//  inside sections and MCQ option order both move — so every set carries its
+//  own answer key, solution and OMR sheet inside the one document.
 // ============================================================
 
 export async function POST(request: NextRequest) {
@@ -50,6 +61,7 @@ export async function POST(request: NextRequest) {
       includeAnswerKey = false,
       pageOverrides,
       documentType: rawDocumentType,
+      setCount: rawSetCount,
     } = body;
     const documentType: PaperDocumentType = isPaperDocumentType(rawDocumentType)
       ? rawDocumentType
@@ -65,6 +77,7 @@ export async function POST(request: NextRequest) {
       select: {
         id: true,
         title: true,
+        setCount: true,
         totalMarks: true,
         passingMarks: true,
         duration: true,
@@ -73,6 +86,7 @@ export async function POST(request: NextRequest) {
         watermarkText: true,
         pageConfig: true,
         createdAt: true,
+        headerTemplate: { select: { config: true } },
         subject: {
           select: {
             name: true,
@@ -122,19 +136,24 @@ export async function POST(request: NextRequest) {
     // Page setup: the paper's saved config, optionally overridden for this export.
     const pageConfig = normalizePageConfig(pageOverrides ?? paper.pageConfig);
 
+    // Sets: the request may override the paper's own set count (e.g. export
+    // a single set while the paper is configured for four).
+    const setCount = normalizeSetCount(rawSetCount ?? paper.setCount);
+
     // Build the HTML for the requested document kind
-    const html = buildPaperHTML(paper, includeAnswerKey, pageConfig, documentType);
+    const html = buildExportHTML(paper, includeAnswerKey, pageConfig, documentType, setCount);
 
     // Generate PDF with Puppeteer
     const pdfBuffer = await generatePDF(html, pageConfig, documentType);
 
     const baseName = paper.title.replace(/[^a-zA-Z0-9]/g, "_") || "paper";
+    const setsSuffix = setCount > 1 ? "_all_sets" : "";
 
     return new Response(new Uint8Array(pdfBuffer), {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${baseName}${documentFileSuffix(documentType)}.pdf"`,
+        "Content-Disposition": `attachment; filename="${baseName}${documentFileSuffix(documentType)}${setsSuffix}.pdf"`,
       },
     });
   } catch (error) {
@@ -152,7 +171,9 @@ export async function POST(request: NextRequest) {
 
 /** The paper shape every document kind renders from (see the POST select). */
 type PaperForExport = {
+  id: string;
   title: string;
+  setCount: number;
   totalMarks: number;
   passingMarks: number | null;
   duration: number | null;
@@ -161,6 +182,8 @@ type PaperForExport = {
   watermarkText: string | null;
   pageConfig: unknown;
   createdAt: Date;
+  /** Selected heading template (wins over the school default header). */
+  headerTemplate: { config: unknown } | null;
   subject: { name: string; classLevel: { name: string } | null } | null;
   school: {
     name: string;
@@ -175,6 +198,7 @@ type PaperForExport = {
     title: string;
     instructions: string | null;
     totalMarks: number;
+    negativeMarks: number | null;
     questions: {
       order: number;
       marksOverride: number | null;
@@ -190,11 +214,67 @@ type PaperForExport = {
   }[];
 };
 
+/**
+ * Entry point for every export: renders one document per set and stitches the
+ * set pages into a single file (the head/CSS come from the first set).
+ *
+ * Each per-set document is a complete HTML page, so we keep the first
+ * document's <head> (the styles are identical) and concatenate only its
+ * `<div class="page">` blocks — page breaks, footers and the per-set heading
+ * stay intact.
+ */
+function buildExportHTML(
+  paper: PaperForExport,
+  includeAnswerKey: boolean,
+  pageConfig: PageConfig,
+  documentType: PaperDocumentType,
+  setCount: number
+): string {
+  const sets = normalizeSetCount(setCount);
+  if (sets <= 1) {
+    return buildPaperHTML(paper, includeAnswerKey, pageConfig, documentType, null);
+  }
+
+  const documents: string[] = [];
+  for (let i = 0; i < sets; i++) {
+    const setPaper = applySetTransform(paper, i, paper.id);
+    documents.push(
+      buildPaperHTML(setPaper, includeAnswerKey, pageConfig, documentType, setLabel(i))
+    );
+  }
+
+  const first = documents[0];
+  const headEnd = first.search(/<body[\s>]/i);
+  if (headEnd < 0) return first;
+
+  const head = first.slice(0, first.indexOf(">", headEnd) + 1);
+  const fragments = documents.map((doc) => pageFragment(doc));
+  // Everything in the first body before its page div (the watermark) is kept.
+  const prefix = first
+    .slice(first.indexOf(">", headEnd) + 1)
+    .split('<div class="page">')[0];
+
+  return `${head}${prefix}${fragments.join(
+    '\n  <div class="set-break"></div>\n'
+  )}\n</body>\n</html>`;
+}
+
+/** The `<div class="page">…</div>` block of a rendered set document. */
+function pageFragment(doc: string): string {
+  const body = doc.match(/<body[^>]*>([\s\S]*)<\/body>/)?.[1] ?? doc;
+  const start = body.indexOf('<div class="page">');
+  if (start < 0) return "";
+  const tail = body.slice(start);
+  const end = tail.lastIndexOf("</div>");
+  return end < 0 ? tail : tail.slice(0, end + "</div>".length);
+}
+
 function buildPaperHTML(
   paper: PaperForExport,
   includeAnswerKey: boolean,
   pageConfig: PageConfig,
-  documentType: PaperDocumentType = "paper"
+  documentType: PaperDocumentType = "paper",
+  setBadge: string | null = null
 ): string {
   const mathCSS = getKaTeXCSS();
   const mathFonts = getMathFonts();
@@ -305,7 +385,9 @@ function buildPaperHTML(
       <div class="section">
         <div class="section-header">
           <h3>${escapeHTML(section.title)}</h3>
-          <span class="section-marks">(${section.totalMarks} marks)</span>
+          <span class="section-marks">(${section.totalMarks} marks${
+            section.negativeMarks ? ` · −${section.negativeMarks} per wrong` : ""
+          })</span>
         </div>
         ${displaySectionInstructions(section.instructions) ? `<p class="section-instructions">${escapeHTML(displaySectionInstructions(section.instructions) ?? "")}</p>` : ""}
         <div class="section-questions">
@@ -347,17 +429,26 @@ function buildPaperHTML(
   // push the bubble grid off the sheet.
   let header = "";
   if (documentType !== "omr") {
-    const schoolHeaderConfig = paper.school?.headerConfig as { canvas?: unknown } | null;
-    if (
-      schoolHeaderConfig &&
-      typeof schoolHeaderConfig === "object" &&
-      schoolHeaderConfig.canvas
-    ) {
-      header = headerConfigToHTML(schoolHeaderConfig as HeaderConfig, ctx, paper.school?.logoUrl ?? null);
-    } else {
-      const headerConfig = normalizeHeaderConfig(paper.school?.headerConfig ?? null);
-      if (headerConfig.rows.length > 0) {
-        header = `<div class="paper-header">${headerConfigToHTML(headerConfig, ctx, paper.school?.logoUrl ?? null)}</div>`;
+    // The paper's chosen heading template wins; the school's default header
+    // (canvas or rows) remains the fallback for papers with no template.
+    const candidates: unknown[] = [
+      paper.headerTemplate?.config,
+      paper.school?.headerConfig,
+    ].filter((c): c is unknown => Boolean(c));
+
+    for (const candidate of candidates) {
+      if (
+        candidate &&
+        typeof candidate === "object" &&
+        (candidate as { canvas?: unknown }).canvas
+      ) {
+        header = headerConfigToHTML(candidate as HeaderConfig, ctx, paper.school?.logoUrl ?? null);
+        break;
+      }
+      const rowsConfig = normalizeHeaderConfig(candidate);
+      if (rowsConfig.rows.length > 0) {
+        header = `<div class="paper-header">${headerConfigToHTML(rowsConfig, ctx, paper.school?.logoUrl ?? null)}</div>`;
+        break;
       }
     }
     if (!header) {
@@ -366,6 +457,12 @@ function buildPaperHTML(
       }</div><hr class="divider">`;
     }
   }
+
+  // Multi-set exports label every page with its set, so papers handed to
+  // different groups can never be mixed up.
+  const setBadgeHTML = setBadge
+    ? `<div class="set-badge"><span>SET ${escapeHTML(setBadge)}</span></div>`
+    : "";
 
   // ── Which document are we rendering? ──
   // The answer key and the solution are exported as their own files, so they
@@ -493,6 +590,31 @@ function buildPaperHTML(
       font-weight: bold;
       color: #02015c;
       margin-bottom: 4px;
+    }
+
+    /* Multi-set exports — a boxed set label at the top of every set page */
+    .set-badge {
+      text-align: center;
+      margin: 0 0 10px;
+    }
+
+    .set-badge span {
+      display: inline-block;
+      font-family: 'Rasa', serif;
+      font-size: 12pt;
+      font-weight: bold;
+      letter-spacing: 0.12em;
+      color: #02015c;
+      border: 1.5px solid #02015c;
+      border-radius: 4px;
+      padding: 2px 18px;
+    }
+
+    /* Forced page break between sets */
+    .set-break {
+      height: 0;
+      break-after: page;
+      page-break-after: always;
     }
 
     /* Instructions */
@@ -817,11 +939,15 @@ function buildPaperHTML(
     <!-- School Header -->
     ${header}
 
+    ${setBadgeHTML}
+
     ${contentHTML}
 
     <!-- Footer -->
     <div class="page-footer">
-      <span>${title}${documentLabel ? ` — ${documentLabel}` : ""}</span>
+      <span>${title}${documentLabel ? ` — ${documentLabel}` : ""}${
+        setBadge ? ` — Set ${setBadge}` : ""
+      }</span>
       <span>Generated by PaperGen</span>
     </div>
   </div>

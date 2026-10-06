@@ -14,7 +14,13 @@ export type TaxonomyNode = {
   subjects: {
     id: string;
     name: string;
-    chapters: { id: string; name: string; topics: { id: string; name: string }[] }[];
+    questionCount: number;
+    chapters: {
+      id: string;
+      name: string;
+      questionCount: number;
+      topics: { id: string; name: string; questionCount: number }[];
+    }[];
   }[];
 };
 
@@ -38,12 +44,17 @@ export default async function AiGeneratorPage({
           select: {
             id: true,
             name: true,
+            _count: { select: { questions: true } },
             chapters: {
               orderBy: [{ order: "asc" }, { name: "asc" }],
               select: {
                 id: true,
                 name: true,
-                topics: { orderBy: { name: "asc" }, select: { id: true, name: true } },
+                _count: { select: { questions: true } },
+                topics: {
+                  orderBy: { name: "asc" },
+                  select: { id: true, name: true, _count: { select: { questions: true } } },
+                },
               },
             },
           },
@@ -67,10 +78,16 @@ export default async function AiGeneratorPage({
     subjects: c.subjects.map((s) => ({
       id: s.id,
       name: s.name,
+      questionCount: s._count.questions,
       chapters: s.chapters.map((ch) => ({
         id: ch.id,
         name: ch.name,
-        topics: ch.topics.map((t) => ({ id: t.id, name: t.name })),
+        questionCount: ch._count.questions,
+        topics: ch.topics.map((t) => ({
+          id: t.id,
+          name: t.name,
+          questionCount: t._count.questions,
+        })),
       })),
     })),
   }));

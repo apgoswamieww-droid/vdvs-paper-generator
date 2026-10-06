@@ -31,12 +31,19 @@ import {
 import { saveGeneratedQuestions } from "./actions";
 import { GatewayOfflineBanner, GatewayStatusPill, type GatewayState } from "./gateway-status";
 import { cn } from "@/lib/utils";
+import { KaTeXRenderer } from "@/components/shared/katex-text";
 import {
   OPTION_LAYOUT_LABELS,
   OPTION_LAYOUT_ORDER,
+  mcqOptionsLayout,
   type McqLayoutMode,
 } from "@/lib/question-options";
 import type { TaxonomyNode } from "./page";
+import { taxLabel } from "@/lib/taxonomy-label";
+
+/** A class has no count of its own — total = sum of its subjects. */
+const classQuestionCount = (c: TaxonomyNode) =>
+  c.subjects.reduce((n, s) => n + s.questionCount, 0);
 
 // ------------------------------------------------------------
 //  Shared types
@@ -495,7 +502,7 @@ export function AiGeneratorClient({
                 <SelectContent>
                   {taxonomy.map((c) => (
                     <SelectItem key={c.id} value={c.id}>
-                      {c.name}
+                      {taxLabel(c.name, classQuestionCount(c))}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -511,7 +518,7 @@ export function AiGeneratorClient({
                 <SelectContent>
                   {(classLevel?.subjects ?? []).map((s) => (
                     <SelectItem key={s.id} value={s.id}>
-                      {s.name}
+                      {taxLabel(s.name, s.questionCount)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -527,7 +534,7 @@ export function AiGeneratorClient({
                 <SelectContent>
                   {(subject?.chapters ?? []).map((c) => (
                     <SelectItem key={c.id} value={c.id}>
-                      {c.name}
+                      {taxLabel(c.name, c.questionCount)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -543,7 +550,7 @@ export function AiGeneratorClient({
                 <SelectContent>
                   {(chapter?.topics ?? []).map((t) => (
                     <SelectItem key={t.id} value={t.id}>
-                      {t.name}
+                      {taxLabel(t.name, t.questionCount)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -736,30 +743,77 @@ export function AiGeneratorClient({
                     </div>
                   </div>
 
-                  <p className="font-[Nunito] text-sm leading-relaxed">{card.q.questionText}</p>
+                  {/* ── Preview — KaTeX text + options in the chosen layout,
+                       exactly how the question lands on the printed paper ── */}
+                  <div className="space-y-1.5">
+                    <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Preview
+                    </span>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950 p-3 font-[Nunito] text-sm leading-relaxed text-slate-200">
+                      <KaTeXRenderer text={card.q.questionText} />
 
-                  {!isMcq && card.q.answerKey && (
-                    <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs">
-                      <span className="font-semibold">Model answer: </span>
-                      {card.q.answerKey}
-                    </div>
-                  )}
-
-                  {isMcq && card.q.options && (
-                    <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-                      {card.q.options.choices.map((choice) => (
+                      {isMcq && card.q.options && (
                         <div
-                          key={choice.label}
-                          className={cn(
-                            "flex items-center gap-2 rounded-lg border px-3 py-2 text-xs",
-                            choice.isCorrect ? "border-emerald-500/40 bg-emerald-500/10" : "border-border bg-muted/20"
-                          )}
+                          className="mt-3 grid gap-x-4 gap-y-2"
+                          style={{
+                            gridTemplateColumns: `repeat(${mcqOptionsLayout(
+                              card.q.options.choices.map((c) => c.text),
+                              card.q.options.layout ?? "auto"
+                            )}, minmax(0, 1fr))`,
+                          }}
                         >
-                          <span className="font-bold">{choice.label}</span>
-                          <span className="flex-1">{choice.text}</span>
-                          {choice.isCorrect && <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />}
+                          {card.q.options.choices.map((choice) => (
+                            <div
+                              key={choice.label}
+                              className={cn(
+                                "flex items-baseline gap-1.5 rounded px-1",
+                                choice.isCorrect && "bg-emerald-500/10 text-emerald-300"
+                              )}
+                            >
+                              <span className="shrink-0 font-medium">({choice.label})</span>
+                              <span className="min-w-0">
+                                <KaTeXRenderer text={choice.text} />
+                              </span>
+                              {choice.isCorrect && <span className="shrink-0 text-emerald-400">✓</span>}
+                            </div>
+                          ))}
                         </div>
-                      ))}
+                      )}
+
+                      {!isMcq && card.q.answerKey && (
+                        <p className="mt-2 border-t border-slate-800 pt-2 text-xs text-slate-400">
+                          <span className="font-semibold text-slate-300">Model answer: </span>
+                          <KaTeXRenderer text={card.q.answerKey} />
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* ── Option layout — sits with the preview, no need to open
+                       the editor to change how options are arranged ── */}
+                  {isMcq && card.q.options && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Label className="shrink-0 text-xs text-muted-foreground">Option layout</Label>
+                      <Select
+                        value={card.q.options.layout ?? "auto"}
+                        onValueChange={(v) => {
+                          if (v) updateLayout(index, v as McqLayoutMode);
+                        }}
+                      >
+                        <SelectTrigger className="h-8 w-[230px] bg-muted/40 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {OPTION_LAYOUT_ORDER.map((l) => (
+                            <SelectItem key={l} value={l}>
+                              {OPTION_LAYOUT_LABELS[l]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <span className="text-[11px] text-muted-foreground">
+                        Applies to this question on the printed paper — the preview above follows it.
+                      </span>
                     </div>
                   )}
 
@@ -836,27 +890,6 @@ export function AiGeneratorClient({
                               </Button>
                             </div>
                           ))}
-                          <div className="space-y-1.5 border-t border-border/60 pt-3">
-                            <Label>Option layout</Label>
-                            <Select
-                              value={card.q.options.layout ?? "auto"}
-                              onValueChange={(v) => { if (v) updateLayout(index, v as McqLayoutMode); }}
-                            >
-                              <SelectTrigger className="w-full bg-slate-950">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {OPTION_LAYOUT_ORDER.map((l) => (
-                                  <SelectItem key={l} value={l}>
-                                    {OPTION_LAYOUT_LABELS[l]}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                            <p className="text-[10px] text-muted-foreground">
-                              Override for just this question on the printed paper and previews.
-                            </p>
-                          </div>
                         </div>
                       )}
 

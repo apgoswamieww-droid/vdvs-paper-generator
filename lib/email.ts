@@ -262,3 +262,40 @@ export function studentCredentialsEmail(args: {
 
   return { subject, html, text };
 }
+// ---------------------------------------------------------
+//  Generic notification email (question review workflow)
+// ---------------------------------------------------------
+
+export function notificationEmail(args: {
+  title: string;
+  body: string;
+  url: string;
+}): { subject: string; html: string; text: string } {
+  const { title, body, url } = args;
+
+  const subject = title;
+
+  const html = `
+    <div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;color:#0f172a;">
+      <div style="background:#2563eb;border-radius:8px 8px 0 0;padding:20px 24px;">
+        <p style="margin:0;color:#fff;font-size:18px;font-weight:700;">${title}</p>
+      </div>
+      <div style="border:1px solid #e2e8f0;border-top:none;border-radius:0 0 8px 8px;padding:24px;">
+        ${body ? `<p style="margin:0 0 16px;">${body}</p>` : ""}
+        <p style="margin:16px 0 0;">
+          <a href="${url}" style="background:#2563eb;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;display:inline-block;font-weight:600;">
+            Open in the app
+          </a>
+        </p>
+        <p style="margin:16px 0 0;color:#64748b;font-size:13px;">
+          You are receiving this because notifications are enabled for your account.
+          An admin can change this under Settings &rarr; Notifications.
+        </p>
+      </div>
+    </div>
+  `;
+
+  const text = [title, "", body, "", `Open: ${url}`].filter(Boolean).join("\n");
+
+  return { subject, html, text };
+}

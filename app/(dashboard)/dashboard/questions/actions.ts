@@ -24,11 +24,13 @@ import { questionScopeFor, teacherSubjectIds } from "@/lib/question-scope";
 import {
   questionFormSchema,
   questionFilterSchema,
+  stripFilterSentinels,
   type ActionState,
   type QuestionFormValue,
 } from "@/lib/validations";
 import type { PaginatedResponse } from "@/types";
 import { resolveAdminScope } from "@/app/(dashboard)/dashboard/admin/scope";
+import { notify } from "@/lib/notifications";
 import {
   translateQuestion,
   type TranslatedQuestion,
@@ -1166,6 +1168,20 @@ export async function assignQuestionTeacher(
 
   revalidateQuestions();
   revalidatePath("/dashboard/teacher/questions/review");
+
+  // Tell the teacher right away — their queue only refreshes on navigation,
+  // so without this the assignment would surface "some time later".
+  if (teacherId) {
+    await notify({
+      userId: teacherId,
+      schoolId: scope.schoolId,
+      type: "QUESTION_ASSIGNED",
+      title: "A question was assigned to you for review",
+      body: "Open your review queue to approve or reject it before it enters the question bank.",
+      data: { url: "/dashboard/teacher/questions/review", questionIds: [questionId] },
+    });
+  }
+
   return {
     success: true,
     message: teacherId ? "Question assigned to teacher." : "Question unassigned.",
@@ -1206,7 +1222,10 @@ export async function listQuestions(
 ): Promise<PaginatedResponse<QuestionListDTO>> {
   const session = await requireSession();
 
-  const filters = questionFilterSchema.safeParse(rawFilters);
+  // "all" sentinels from filter dropdowns are dropped rather than rejected —
+  // a single bad enum value used to fail the whole schema and silently
+  // return an empty page ("no questions found").
+  const filters = questionFilterSchema.safeParse(stripFilterSentinels(rawFilters));
   if (!filters.success) {
     return {
       items: [],
@@ -1504,6 +1523,7 @@ export type TaxonomyNode = {
   code?: string | null; // subjects only
   medium?: Medium; // subjects only
   order?: number; // chapters/topics
+  questionCount?: number; // subjects/chapters/topics
   children: TaxonomyNode[];
 };
 
@@ -1517,10 +1537,15 @@ export async function getTaxonomyTree(): Promise<TaxonomyNode[]> {
       subjects: {
         orderBy: { name: "asc" },
         include: {
+          _count: { select: { questions: true } },
           chapters: {
             orderBy: { order: "asc" },
             include: {
-              topics: { orderBy: { order: "asc" } },
+              _count: { select: { questions: true } },
+              topics: { 
+                orderBy: { order: "asc" },
+                include: { _count: { select: { questions: true } } }
+              },
             },
           },
         },
@@ -1536,14 +1561,17 @@ export async function getTaxonomyTree(): Promise<TaxonomyNode[]> {
       name: s.name,
       code: s.code,
       medium: s.medium,
+      questionCount: s._count.questions,
       children: s.chapters.map((ch) => ({
         id: ch.id,
         name: ch.name,
         order: ch.order,
+        questionCount: ch._count.questions,
         children: ch.topics.map((t) => ({
           id: t.id,
           name: t.name,
           order: t.order,
+          questionCount: t._count.questions,
           children: [],
         })),
       })),

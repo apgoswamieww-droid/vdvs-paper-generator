@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { getTaxonomyTree } from "../../questions/actions";
+import { listHeaderTemplates } from "../actions";
 import prisma from "@/lib/prisma";
 import { requireSession } from "@/lib/session";
 import {
@@ -17,7 +18,10 @@ export const metadata: Metadata = {
 };
 
 export default async function NewPaperPage() {
-  const taxonomy = await getTaxonomyTree();
+  const [taxonomy, templates] = await Promise.all([
+    getTaxonomyTree(),
+    listHeaderTemplates(),
+  ]);
   const { schoolId } = await requireSession();
   const school = await prisma.school.findUnique({
     where: { id: schoolId },
@@ -67,6 +71,7 @@ export default async function NewPaperPage() {
       </div>
       <PaperBuilderClient
         taxonomy={taxonomy}
+        templates={templates}
         paperDefaults={{
           ...profile,
           defaultInstructions: school?.defaultInstructions ?? "",

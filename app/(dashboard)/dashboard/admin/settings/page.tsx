@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import prisma from "@/lib/prisma";
 import { resolveAdminScope } from "../scope";
 import { normalizeStoredHeaderConfig } from "@/lib/paper-header";
+import { listHeaderTemplates } from "../../papers/actions";
+import { listPreferences } from "@/lib/notifications";
 import { SettingsTabs } from "./settings-tabs";
 
 export const metadata: Metadata = {
@@ -17,7 +19,8 @@ export default async function AdminSettingsPage({
   const params = await searchParams;
   const scope = await resolveAdminScope(params.schoolId);
 
-  const school = await prisma.school.findUnique({
+  const [school, templates, notificationPrefs] = await Promise.all([
+    prisma.school.findUnique({
     where: { id: scope.schoolId },
     select: {
       name: true,
@@ -37,7 +40,10 @@ export default async function AdminSettingsPage({
       planTier: true,
       isActive: true,
     },
-  });
+    }),
+    listHeaderTemplates(),
+    listPreferences(scope.schoolId),
+  ]);
 
   if (!school) {
     return (
@@ -67,6 +73,8 @@ export default async function AdminSettingsPage({
         planTier: school.planTier,
         isActive: school.isActive,
       }}
+      templates={templates}
+      notificationPrefs={notificationPrefs}
       auditSchoolId={scope.role === "SUPER_ADMIN" ? scope.schoolId : null}
     />
   );

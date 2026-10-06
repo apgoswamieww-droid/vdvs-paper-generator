@@ -24,7 +24,9 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MAX_SETS, SET_LABELS, normalizeSetCount } from "@/lib/paper-sets";
 import { FileText, FileType2, Grid3x3, KeyRound, Lightbulb, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PageSettingsEditor } from "./page-settings-editor";
@@ -75,6 +77,8 @@ type Props = {
   paperTitle: string;
   /** The paper's saved page setup — the starting point for each export. */
   savedConfig: PageConfig | null;
+  /** How many sets the paper is configured for (Set A / Set B …). */
+  setCount?: number;
 };
 
 export function ExportPaperDialog({
@@ -83,12 +87,15 @@ export function ExportPaperDialog({
   paperId,
   paperTitle,
   savedConfig,
+  setCount = 1,
 }: Props) {
   const [documentType, setDocumentType] = useState<PaperDocumentType>("paper");
   const [config, setConfig] = useState<PageConfig>(savedConfig ?? DEFAULT_PAGE_CONFIG);
   // Only meaningful for the paper itself: a clean student copy by default,
   // since the answers now have their own separate documents.
   const [includeAnswerKey, setIncludeAnswerKey] = useState(false);
+  // How many sets this download contains — defaults to the paper's own count.
+  const [sets, setSets] = useState(normalizeSetCount(setCount));
   const [busy, setBusy] = useState<ExportFormat | null>(null);
 
   function handleOpenChange(next: boolean) {
@@ -97,6 +104,7 @@ export function ExportPaperDialog({
       setConfig(savedConfig ?? DEFAULT_PAGE_CONFIG);
       setIncludeAnswerKey(false);
       setDocumentType("paper");
+      setSets(normalizeSetCount(setCount));
       setBusy(null);
     }
     onOpenChange(next);
@@ -113,6 +121,7 @@ export function ExportPaperDialog({
         includeAnswerKey:
           documentType === "paper" || documentType === "omr" ? includeAnswerKey : false,
         pageOverrides: config,
+        setCount: sets,
       });
       toast.success(`${PAPER_DOCUMENT_LABELS[documentType]} downloaded.`);
       onOpenChange(false);
@@ -165,6 +174,28 @@ export function ExportPaperDialog({
                 </button>
               );
             })}
+          </div>
+
+          {/* Sets — every set reshuffles questions and options, so the key,
+              solution and OMR sheet are produced set-wise in the same file. */}
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/40 p-3">
+            <div>
+              <Label className="text-xs">Sets in this export</Label>
+              <p className="text-[11px] text-muted-foreground">
+                {sets > 1
+                  ? `Set A–${SET_LABELS[sets - 1]} in one file: sets B onward reshuffle the question order and the MCQ options, and each set gets its own answer key, solution and OMR sheet.`
+                  : "One set. Raise this to export every set of the paper in a single file."}
+              </p>
+            </div>
+            <Input
+              type="number"
+              min={1}
+              max={MAX_SETS}
+              value={sets}
+              onChange={(e) => setSets(normalizeSetCount(e.target.value))}
+              className="h-8 w-20 shrink-0 text-sm"
+              aria-label="Number of sets"
+            />
           </div>
 
           {/* Answers — the paper prints them inline/on a page; the OMR sheet

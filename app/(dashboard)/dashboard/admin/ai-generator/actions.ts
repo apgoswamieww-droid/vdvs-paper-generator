@@ -8,6 +8,7 @@ import { auth } from "@/lib/auth";
 import { resolveAdminScope } from "../scope";
 import { randomQuestionCode } from "@/lib/question-code";
 import { BLOOM_LEVELS, MEDIUMS } from "@/lib/validations";
+import { notifyMany, type NotifyInput } from "@/lib/notifications";
 import type { QuestionType } from "@prisma/client";
 
 // ============================================================
@@ -122,6 +123,9 @@ export async function saveGeneratedQuestions(raw: unknown): Promise<SaveGenerate
   const status = autoApprove ? "APPROVED" : "PENDING";
   const skipped: SaveGeneratedResult["skipped"] = [];
   let created = 0;
+  // Question ids created as PENDING, grouped by who must review them.
+  const assignedIds = new Map<string, string[]>();
+  const unassignedIds: string[] = [];
 
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
@@ -147,7 +151,7 @@ export async function saveGeneratedQuestions(raw: unknown): Promise<SaveGenerate
     let attempt = 0;
     for (;;) {
       try {
-        await prisma.question.create({
+        const saved = await prisma.question.create({
           data: {
             code,
             questionText: q.questionText,
@@ -173,6 +177,15 @@ export async function saveGeneratedQuestions(raw: unknown): Promise<SaveGenerate
           },
         });
         created++;
+        if (status === "PENDING") {
+          if (saved.assignedTeacherId) {
+            const ids = assignedIds.get(saved.assignedTeacherId) ?? [];
+            ids.push(saved.id);
+            assignedIds.set(saved.assignedTeacherId, ids);
+          } else {
+            unassignedIds.push(saved.id);
+          }
+        }
         break;
       } catch (err) {
         const isCodeCollision =
@@ -195,6 +208,48 @@ export async function saveGeneratedQuestions(raw: unknown): Promise<SaveGenerate
 
   if (created === 0) {
     return { success: false, error: "No questions could be saved. " + (skipped[0]?.reason ?? "") };
+  }
+
+  // One notification per teacher (batched), plus a heads-up to admins for
+  // questions that were saved with nobody assigned to review them.
+  if (assignedIds.size > 0 || unassignedIds.length > 0) {
+    const toNotify: NotifyInput[] = [];
+
+    for (const [teacherId, questionIds] of assignedIds) {
+      toNotify.push({
+        userId: teacherId,
+        schoolId: scope.schoolId,
+        type: "QUESTION_ASSIGNED",
+        title:
+          questionIds.length === 1
+            ? "1 AI question was assigned to you for review"
+            : `${questionIds.length} AI questions were assigned to you for review`,
+        body: "Open your review queue to approve or reject them before papers can use them.",
+        data: { url: "/dashboard/teacher/questions/review", questionIds },
+      });
+    }
+
+    if (unassignedIds.length > 0) {
+      const admins = await prisma.user.findMany({
+        where: { schoolId: scope.schoolId, role: "SCHOOL_ADMIN", isActive: true },
+        select: { id: true },
+      });
+      for (const admin of admins) {
+        toNotify.push({
+          userId: admin.id,
+          schoolId: scope.schoolId,
+          type: "QUESTION_UNASSIGNED",
+          title:
+            unassignedIds.length === 1
+              ? "1 AI question needs a reviewer"
+              : `${unassignedIds.length} AI questions need a reviewer`,
+          body: "They were saved without an assigned teacher, so no review queue shows them yet.",
+          data: { url: "/dashboard/questions", questionIds: unassignedIds },
+        });
+      }
+    }
+
+    if (toNotify.length > 0) await notifyMany(toNotify);
   }
 
   return { success: true, created, status, skipped };

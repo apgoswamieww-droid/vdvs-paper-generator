@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import prisma from "@/lib/prisma";
 import { requireSession } from "@/lib/session";
+import { sweepReminders } from "@/lib/notifications";
 import { ReviewQueueClient } from "./review-queue-client";
 
 export const metadata: Metadata = {
@@ -51,6 +52,10 @@ const questionSelect = {
 
 export default async function TeacherReviewQueuePage() {
   const session = await requireSession();
+
+  // Second reminder trigger (the poll endpoint is the first): throttled to
+  // one sweep per 5 minutes per school inside sweepReminders().
+  void sweepReminders(session.schoolId);
 
   const [allPending, approved] = await Promise.all([
     prisma.question.findMany({
