@@ -272,10 +272,10 @@ export function QuestionsClient({
           <Plus className="h-4 w-4" />
           Add Question
         </Button>
-        {/* <Button variant="outline" onClick={() => setImportOpen(true)} className="gap-1.5">
+        <Button variant="outline" onClick={() => setImportOpen(true)} className="gap-1.5">
           <Upload className="h-4 w-4" />
           Import .docx
-        </Button> */}
+        </Button>
         <div className="ml-auto">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
