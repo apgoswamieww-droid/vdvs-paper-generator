@@ -23,6 +23,7 @@ import {
   PenLine,
   Award,
   Sparkles,
+  Smartphone,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -62,6 +63,7 @@ const SCHOOL_ADMIN_ITEMS = [
 
 const SUPER_ADMIN_ITEMS = [
   { label: "Platform", href: "/dashboard/super-admin", icon: Building2 },
+  { label: "App Config", href: "/dashboard/super-admin/app-config", icon: Smartphone },
 ] as const;
 
 // Personal account settings — reachable by every signed-in role (see middleware.ts).

@@ -773,3 +773,22 @@ model NotificationPreference {
   @@unique([schoolId, event])
   @@map("notification_preferences")
 }
+
+// ============================================================
+//  APP CONFIG — singleton row (fixed id) controlling the
+//  mobile app: version gates, compulsory updates, maintenance
+//  mode. Read by the public GET /api/app/init endpoint.
+//  @map keeps the DB columns snake_case as specified.
+// ============================================================
+
+model AppConfig {
+  id                      String   @id @default("app_config")
+  androidVersion          String   @default("1.0.0") @map("android_version")
+  androidCompulsoryUpdate Boolean  @default(false) @map("android_compulsory_update")
+  iosVersion              String   @default("1.0.0") @map("ios_version")
+  iosCompulsoryUpdate     Boolean  @default(false) @map("ios_compulsory_update")
+  maintenanceMode         Boolean  @default(false) @map("maintenance_mode")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  @@map("app_configs")
+}

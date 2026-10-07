@@ -17,10 +17,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { LoaderCircle, ScanText, Upload } from "lucide-react";
 
-/** Cap the pixel count sent to the server — OCR time scales with pixels. */
-const MAX_PIXELS = 4_000_000;
+/** Cap the pixel count sent to the server — OCR time scales with pixels,
+ *  and the Vercel function's shared CPU is far slower than a dev machine. */
+const MAX_PIXELS = 2_000_000;
 /** Vercel request bodies cap at ~4.5 MB; stay well under as base64. */
 const MAX_UPLOAD_CHARS = 3_500_000;
+/** Give up client-side shortly after the server's 55 s deadline + platform
+ *  504, so a stalled connection never leaves the dialog spinning forever. */
+const CLIENT_TIMEOUT_MS = 65_000;
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -128,12 +132,15 @@ export function OCRDialog({
     setBusy(true);
     setError(null);
     setDone(false);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CLIENT_TIMEOUT_MS);
     try {
       const base64 = await toUploadBase64(image);
       const res = await fetch("/api/ocr", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ image: base64 }),
+        signal: controller.signal,
       });
       const json = (await res.json().catch(() => null)) as
         | { text?: string; error?: string }
@@ -146,9 +153,14 @@ export function OCRDialog({
       setExtracted(json.text);
       setDone(true);
       // keep the original image previewed until the dialog is closed
-    } catch {
-      setError("OCR failed. Please try again.");
+    } catch (err) {
+      setError(
+        err instanceof DOMException && err.name === "AbortError"
+          ? "OCR timed out. Try a smaller screenshot."
+          : "OCR failed. Please try again."
+      );
     } finally {
+      clearTimeout(timer);
       setBusy(false);
     }
   }

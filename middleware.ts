@@ -61,6 +61,7 @@ export default auth((req) => {
     "/register",
     "/api/auth",
     "/api/health",
+    "/api/app/init", // mobile boot check — version gates + maintenance flag
     "/_next",
     "/favicon.ico",
   ];

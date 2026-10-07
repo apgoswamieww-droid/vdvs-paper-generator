@@ -68,7 +68,7 @@ describe("unauthenticated requests", () => {
   });
 
   it("lets public paths through", () => {
-    for (const p of ["/login", "/register", "/api/auth/session", "/api/health", "/favicon.ico"]) {
+    for (const p of ["/login", "/register", "/api/auth/session", "/api/health", "/api/app/init", "/favicon.ico"]) {
       expect(passesThrough(p), `${p} should be public`).toBe(true);
     }
   });
