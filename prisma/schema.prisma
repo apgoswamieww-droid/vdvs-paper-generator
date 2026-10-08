@@ -39,7 +39,7 @@ enum PaperStatus {
 }
 
 enum QuestionStatus {
-  PENDING  // AI-generated, awaiting teacher review
+  PENDING  // Awaiting teacher review — AI-generated, or bulk-imported by a teacher
   APPROVED // Ready for use in papers
   REJECTED // Not fit for the bank
 }
@@ -126,15 +126,19 @@ enum SubmissionStatus {
 }
 
 model QuestionImport {
-  id           String       @id @default(cuid())
-  fileName     String
-  kind         ImportKind   @default(QUESTION)
-  status       ImportStatus @default(PENDING)
+  id       String  @id @default(cuid())
+  fileName String
+  kind     ImportKind   @default(QUESTION)
+  status   ImportStatus @default(PENDING)
   totalCount   Int          @default(0)
   successCount Int          @default(0)
   failedCount  Int          @default(0)
   errors       Json // [{ row, questionPreview, error }]
-  createdAt    DateTime     @default(now())
+  // SHA-256 of the uploaded file. A teacher re-uploading the same filled
+  // template would otherwise silently duplicate every question, so this
+  // backs the "already imported" check in the upload action.
+  contentHash String?
+  createdAt DateTime @default(now())
 
   schoolId String
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
@@ -142,6 +146,7 @@ model QuestionImport {
   user     User   @relation(fields: [userId], references: [id])
 
   @@index([schoolId, createdAt])
+  @@index([schoolId, contentHash])
   @@index([userId])
   @@map("question_imports")
 }

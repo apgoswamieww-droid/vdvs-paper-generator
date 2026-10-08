@@ -1247,6 +1247,7 @@ export async function listQuestions(
     ...(f.difficulty ? { difficulty: f.difficulty } : {}),
     ...(f.medium ? { medium: f.medium } : {}),
     ...(f.bloomLevel ? { bloomLevel: f.bloomLevel } : {}),
+    ...(f.status?.length ? { status: { in: f.status } } : {}),
     ...(f.previousYearTag
       ? { previousYearTag: { contains: f.previousYearTag } }
       : {}),

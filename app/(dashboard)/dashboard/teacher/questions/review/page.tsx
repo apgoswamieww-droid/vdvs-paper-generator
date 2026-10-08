@@ -58,12 +58,18 @@ export default async function TeacherReviewQueuePage() {
   void sweepReminders(session.schoolId);
 
   const [allPending, approved] = await Promise.all([
+    // PENDING means "awaiting a teacher's eyes", which now covers both
+    // AI-generated questions and bulk-imported ones (see
+    // questions/import/actions.ts). The filter must therefore NOT require
+    // createdByAi, and must also surface unassigned rows — a bulk import
+    // lands with assignedTeacherId = null so the importing teacher can
+    // review their own upload. Filtering on createdByAi here made every
+    // bulk-imported question permanently invisible and unapprovable.
     prisma.question.findMany({
       where: {
         schoolId: session.schoolId,
-        createdByAi: true,
         status: "PENDING",
-        assignedTeacherId: session.id,
+        OR: [{ assignedTeacherId: session.id }, { assignedTeacherId: null }],
       },
       orderBy: { createdAt: "asc" },
       select: questionSelect,
@@ -71,7 +77,6 @@ export default async function TeacherReviewQueuePage() {
     prisma.question.findMany({
       where: {
         schoolId: session.schoolId,
-        createdByAi: true,
         status: "APPROVED",
         OR: [{ reviewedById: session.id }, { assignedTeacherId: session.id }],
       },

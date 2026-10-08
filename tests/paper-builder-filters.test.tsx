@@ -196,8 +196,11 @@ describe("Create-Paper question search filters", () => {
     await click(findTrigger(el, "All Difficulties"));
     await chooseOption("All Difficulties");
 
+    // `click` dispatches four pointer/mouse events, each in its own act().
+    // It must be awaited here — letting it float made the assertion below race
+    // the final click, which is why this test failed roughly one run in three.
     await act(async () => {
-      click(findButton(el, "Search"));
+      await click(findButton(el, "Search"));
     });
     await act(async () => {});
 
@@ -223,7 +226,7 @@ describe("Create-Paper question search filters", () => {
     await chooseOption("Easy");
 
     await act(async () => {
-      click(findButton(el, "Search"));
+      await click(findButton(el, "Search"));
     });
     await act(async () => {});
 

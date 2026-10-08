@@ -278,7 +278,7 @@ export async function createManualPaper(
   const uniqueQuestionIds = [...new Set(allQuestionIds)];
   const validQuestions = await prisma.question.findMany({
     where: { id: { in: uniqueQuestionIds }, schoolId: session.schoolId },
-    select: { id: true, marks: true },
+    select: { id: true, marks: true, status: true },
   });
 
   if (validQuestions.length !== uniqueQuestionIds.length) {
@@ -287,6 +287,19 @@ export async function createManualPaper(
     return {
       success: false,
       error: `${missing.length} question(s) not found in your school. Please refresh and try again.`,
+    };
+  }
+
+  // The question picker already hides PENDING rows, but that filter lives
+  // only in the UI — re-check here so a hand-crafted request (or a stale
+  // tab holding ids from before an import) cannot push unreviewed
+  // questions into an exam. Counted separately from "not found" so the
+  // teacher is told the real reason.
+  const awaitingReview = validQuestions.filter((q) => q.status !== "APPROVED").length;
+  if (awaitingReview > 0) {
+    return {
+      success: false,
+      error: `${awaitingReview} question(s) are still awaiting review and cannot be used in a paper yet. Remove them and try again.`,
     };
   }
 

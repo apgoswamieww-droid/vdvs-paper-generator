@@ -481,7 +481,9 @@ export function QuestionForm({
     if (!term) return;
     setLinkSearching(true);
     try {
-      const res = await listQuestions({ search: term, pageSize: 6 });
+      // Only reviewed questions can be linked as a translation partner — an
+      // unreviewed PENDING row is not yet part of the usable bank.
+      const res = await listQuestions({ search: term, pageSize: 6, status: ["APPROVED"] });
       setLinkResults(res.items);
     } catch {
       toast.error("Could not search questions.");

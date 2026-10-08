@@ -127,33 +127,62 @@ export type Run = {
   color?: string;
   size?: number; // half-points: 20 = 10pt
   font?: string;
+  /**
+   * Complex-script font, emitted as `w:cs`. Needed for Indic runs (Gujarati):
+   * Word picks `w:cs` for those, so `font` alone leaves them on the theme
+   * default and they render as tofu in stricter readers.
+   */
+  csFont?: string;
 };
 
-/** A `<w:p>` paragraph. `align` maps to Word's left/center/right. */
+/**
+ * A `<w:p>` paragraph. `align` maps to Word's left/center/right.
+ *
+ * Child elements of `<w:pPr>` are emitted in schema order (pBdr →
+ * spacing → ind → jc). Word tolerates other orders, but the importer
+ * and the paper exporter both round-trip these documents, so emitting
+ * the canonical order keeps the file valid for stricter readers.
+ */
 export function para(
   runs: Run[],
   spacingAfter = 120,
-  opts: { align?: "left" | "center" | "right"; lineSpacing?: number; indent?: number } = {}
+  opts: {
+    align?: "left" | "center" | "right";
+    lineSpacing?: number;
+    indent?: number;
+    /** Colour of a rule drawn under the paragraph. */
+    borderBottom?: string;
+  } = {}
 ): string {
   const r = runs
-    .map(({ text, bold, italic, color, size, font }) => {
+    .map(({ text, bold, italic, color, size, font, csFont }) => {
+      // `w:cs` is what Word actually honours for Gujarati and other Indic
+      // runs; falling back to `font` keeps one call enough for mixed text.
+      const cs = csFont ?? font;
       const rpr =
         `<w:rPr>${bold ? "<w:b/>" : ""}${italic ? "<w:i/>" : ""}` +
-        (font ? `<w:rFonts w:ascii="${font}" w:hAnsi="${font}"/>` : "") +
+        (font || cs
+          ? `<w:rFonts w:ascii="${font ?? cs}" w:hAnsi="${font ?? cs}"` +
+            (cs ? ` w:cs="${cs}"` : "") +
+            `/>`
+          : "") +
         (color ? `<w:color w:val="${color}"/>` : "") +
         `<w:sz w:val="${size ?? 22}"/></w:rPr>`;
       return `<w:r>${rpr}<w:t xml:space="preserve">${esc(text)}</w:t></w:r>`;
     })
     .join("");
 
-  const jc = opts.align && opts.align !== "left" ? `<w:jc w:val="${opts.align}"/>` : "";
-  const ind = opts.indent ? `<w:ind w:left="${Math.round(opts.indent)}"/>` : "";
+  const border = opts.borderBottom
+    ? `<w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="${opts.borderBottom}"/></w:pBdr>`
+    : "";
   const spacing =
     `<w:spacing w:after="${spacingAfter}"` +
     (opts.lineSpacing ? ` w:line="${Math.round(opts.lineSpacing * 240)}" w:lineRule="auto"` : "") +
     `/>`;
+  const ind = opts.indent ? `<w:ind w:left="${Math.round(opts.indent)}"/>` : "";
+  const jc = opts.align && opts.align !== "left" ? `<w:jc w:val="${opts.align}"/>` : "";
 
-  return `<w:p><w:pPr>${jc}${ind}${spacing}</w:pPr>${r}</w:p>`;
+  return `<w:p><w:pPr>${border}${spacing}${ind}${jc}</w:pPr>${r}</w:p>`;
 }
 
 export const PAGE_BREAK = `<w:p><w:r><w:br w:type="page"/></w:r></w:p>`;
@@ -165,7 +194,13 @@ export const PAGE_BREAK = `<w:p><w:r><w:br w:type="page"/></w:r></w:p>`;
 export function buildDocumentXml(body: string, sectPr: string): string {
   return (
     `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-    `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+    // `m` is the OMML namespace and `r` the relationship namespace. Both
+    // must be declared up front: without them Word silently drops a pasted
+    // equation on open, which is invisible until a teacher uploads the file
+    // and finds their maths missing.
+    `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"` +
+    ` xmlns:m="http://schemas.openxmlformats.org/officeDocument/math"` +
+    ` xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
     `<w:body>${body}${sectPr}</w:body></w:document>`
   );
 }
@@ -198,6 +233,12 @@ export function imageExtension(contentType: DocxImage["contentType"]): string {
 export type DocxTableCell = {
   widthTwips: number;
   vAlign?: "top" | "center" | "bottom";
+  /**
+   * Number of grid columns this cell covers. Omitted means 1. A spanning
+   * cell's `widthTwips` must equal the sum of the columns it covers —
+   * that is how the grid is derived.
+   */
+  gridSpan?: number;
   /** Cell body — paragraphs / image runs. Falls back to an empty paragraph. */
   paragraphs: string;
 };
@@ -208,17 +249,45 @@ export type DocxTableCell = {
  * logo next to the school name, for example). Passing a border color turns
  * every cell edge into a visible rule, which is how the header's boxed meta
  * grid and the answer-key grid are drawn.
+ *
+ * The grid is derived from whichever row spans the most columns (not
+ * necessarily the first), so a layout whose opening row is a single merged
+ * full-width cell still produces a correct `<w:tblGrid>`.
+ *
+ * `repeatHeaderRows` marks the first N rows with `<w:tblHeader/>`, which
+ * makes Word repeat them at every page break — the standard behaviour for
+ * a form, and something the bulk-import parser must tolerate.
  */
 export function borderedTable(
   totalWidthTwips: number,
   rows: DocxTableCell[][],
-  borderColor?: string
+  borderColor?: string,
+  opts: { repeatHeaderRows?: number; grid?: number[] } = {}
 ): string {
-  const firstRow = rows.find((r) => r.length > 0);
-  if (!firstRow) return "";
+  const repeat = opts.repeatHeaderRows ?? 0;
 
-  const grid = firstRow
-    .map((c) => `<w:gridCol w:w="${Math.max(1, Math.round(c.widthTwips))}"/>`)
+  // Widest row, in grid columns — decides the grid.
+  //
+  // `opts.grid` overrides the derivation. Deriving from a merged full-width
+  // row splits its width evenly, so a layout whose first row spans every
+  // column would otherwise get N equal columns rather than the intended
+  // ones — and any per-cell widthTwips would then disagree with the grid.
+  let gridWidths: number[] = opts.grid ? [...opts.grid] : [];
+  if (!opts.grid) {
+    for (const row of rows) {
+      const widths: number[] = [];
+      for (const cell of row) {
+        const span = Math.max(1, cell.gridSpan ?? 1);
+        const per = cell.widthTwips / span;
+        for (let i = 0; i < span; i++) widths.push(per);
+      }
+      if (widths.length > gridWidths.length) gridWidths = widths;
+    }
+  }
+  if (!gridWidths.length) return "";
+
+  const grid = gridWidths
+    .map((w) => `<w:gridCol w:w="${Math.max(1, Math.round(w))}"/>`)
     .join("");
 
   const border = (tag: string) =>
@@ -227,18 +296,21 @@ export function borderedTable(
       : `<w:${tag} w:val="none" w:sz="0" w:space="0"/>`;
 
   const trs = rows
-    .map((cells) => {
+    .map((cells, rowIndex) => {
       const row = cells
         .map((c) => {
           const width = Math.max(1, Math.round(c.widthTwips));
+          const span = Math.max(1, c.gridSpan ?? 1);
+          const spanXml = span > 1 ? `<w:gridSpan w:val="${span}"/>` : "";
           return (
-            `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>` +
+            `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>${spanXml}` +
             (c.vAlign ? `<w:vAlign w:val="${c.vAlign}"/>` : "") +
             `</w:tcPr>${c.paragraphs || "<w:p/>"}</w:tc>`
           );
         })
         .join("");
-      return `<w:tr>${row}</w:tr>`;
+      const trPr = rowIndex < repeat ? `<w:trPr><w:tblHeader/></w:trPr>` : "";
+      return `<w:tr>${trPr}${row}</w:tr>`;
     })
     .join("");
 

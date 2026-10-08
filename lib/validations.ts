@@ -165,6 +165,19 @@ export const questionFilterSchema = z.object({
   medium: mediumEnum.optional(),
   bloomLevel: bloomEnum.optional(),
   previousYearTag: z.string().trim().max(60).optional(),
+  /**
+   * Restrict to these statuses. Omitted means "any".
+   *
+   * This exists because `listQuestions` has two callers with opposite
+   * needs: the Question Bank listing must show PENDING rows so a teacher
+   * can see what they just uploaded, while the paper builder must not
+   * offer questions that have not been reviewed yet. Callers state which
+   * they want instead of the query picking one default.
+   */
+  status: z
+    .array(z.enum(["PENDING", "APPROVED", "REJECTED"]))
+    .max(3)
+    .optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(5).max(100).default(20),
 });

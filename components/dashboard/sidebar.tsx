@@ -203,9 +203,26 @@ function SidebarContent({
   );
 }
 
-export function DashboardSidebar() {
-  const [collapsed, setCollapsed] = useState(false);
+export function DashboardSidebar({
+  collapsed,
+  onToggleCollapsed,
+}: {
+  /**
+   * Collapse state, owned by the layout shell. It has to live above the
+   * sidebar because the content column pads itself by the sidebar's width —
+   * if the sidebar alone held this, the content would keep reserving the
+   * expanded width and leave a blank strip behind on collapse.
+   */
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
+} = {}) {
+  // Fall back to local state so the sidebar still works standalone.
+  const [ownCollapsed, setOwnCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  const isCollapsed = collapsed ?? ownCollapsed;
+  const toggleCollapsed =
+    onToggleCollapsed ?? (() => setOwnCollapsed((o) => !o));
 
   useEffect(() => {
     const handler = () => setMobileOpen((o) => !o);
@@ -219,15 +236,23 @@ export function DashboardSidebar() {
       <aside
         className={cn(
           "hidden lg:flex lg:flex-col lg:fixed lg:inset-y-0 lg:z-30 border-r border-sidebar-border bg-sidebar transition-all duration-200",
-          collapsed ? "lg:w-16" : "lg:w-60"
+          isCollapsed ? "lg:w-16" : "lg:w-60"
         )}
       >
-        <SidebarContent collapsed={collapsed} />
+        <SidebarContent collapsed={isCollapsed} />
         <button
-          onClick={() => setCollapsed(!collapsed)}
+          type="button"
+          onClick={toggleCollapsed}
+          aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={!isCollapsed}
           className="absolute -right-3 top-16 z-40 flex h-6 w-6 items-center justify-center rounded-full border border-sidebar-border bg-sidebar text-sidebar-foreground/60 shadow-md transition-all hover:bg-sidebar-accent hover:text-sidebar-foreground"
         >
-          {collapsed ? <PanelLeft className="h-3 w-3" /> : <PanelLeftClose className="h-3 w-3" />}
+          {isCollapsed ? (
+            <PanelLeft className="h-3 w-3" />
+          ) : (
+            <PanelLeftClose className="h-3 w-3" />
+          )}
         </button>
       </aside>
 

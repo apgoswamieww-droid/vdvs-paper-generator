@@ -1,5 +1,4 @@
-import { DashboardSidebar } from "@/components/dashboard/sidebar";
-import { DashboardHeader } from "@/components/dashboard/header";
+import { DashboardShell } from "@/components/dashboard/dashboard-shell";
 import prisma from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 
@@ -21,20 +20,8 @@ export default async function DashboardLayout({
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Collapsible Sidebar */}
-      <DashboardSidebar />
-
-      {/* Main content area — offset by sidebar width on desktop */}
-      <div className="flex flex-1 flex-col lg:pl-60 transition-all duration-200">
-        {/* Top Header */}
-        <DashboardHeader avatarUrl={avatarUrl} />
-
-        {/* Page content */}
-        <main className="flex-1 overflow-auto p-4 lg:p-6">
-          {children}
-        </main>
-      </div>
-    </div>
+    // The shell is a client component because it owns the sidebar's collapsed
+    // state — the content column's padding has to follow the sidebar's width.
+    <DashboardShell avatarUrl={avatarUrl}>{children}</DashboardShell>
   );
 }

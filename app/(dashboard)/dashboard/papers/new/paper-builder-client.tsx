@@ -241,6 +241,10 @@ export function PaperBuilderClient({ taxonomy, paperDefaults, templates: initial
         const filters: Record<string, unknown> = {
           page,
           pageSize: 15,
+          // Only reviewed questions may enter a paper. Bulk imports land
+          // PENDING, so without this an unreviewed question could reach an
+          // exam the moment it was uploaded.
+          status: ["APPROVED"],
         };
         if (qSearch) filters.search = qSearch;
         if (qMedium) filters.medium = qMedium;
